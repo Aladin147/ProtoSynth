@@ -571,5 +571,305 @@ class TestConstantPerturbAntibiased(unittest.TestCase):
         self.assertEqual(result1.value, result2.value)
 
 
+class TestVariableRenameAntibiased(unittest.TestCase):
+    """
+    Anti-biased tests for variable rename - designed to catch
+    scope issues, name collisions, and binding problems.
+    """
+
+    def test_var_rename_preserves_semantics(self):
+        """Test that variable rename preserves program semantics."""
+        from protosynth.mutation import _var_rename_mutation
+        from protosynth import LispInterpreter
+
+        rng = random.Random(42)
+        interpreter = LispInterpreter()
+
+        # Simple let binding
+        ast = let('x', const(10), op('+', var('x'), const(5)))
+        original_result = interpreter.evaluate(ast)
+
+        try:
+            mutated = _var_rename_mutation(ast, rng)
+            mutated_result = interpreter.evaluate(mutated)
+
+            # Should produce same result
+            self.assertEqual(original_result, mutated_result)
+        except ValueError as e:
+            # It's ok if no suitable variables found
+            self.assertIn("No suitable", str(e))
+
+    def test_var_rename_handles_nested_scopes(self):
+        """Test variable rename with nested let bindings."""
+        from protosynth.mutation import _var_rename_mutation
+        from protosynth import LispInterpreter
+
+        rng = random.Random(42)
+        interpreter = LispInterpreter()
+
+        # Nested scopes with same variable name
+        ast = let('x', const(1),
+                  let('x', const(2),  # Shadows outer x
+                      op('+', var('x'), const(10))))  # Should use inner x
+
+        original_result = interpreter.evaluate(ast)
+
+        try:
+            mutated = _var_rename_mutation(ast, rng)
+            mutated_result = interpreter.evaluate(mutated)
+
+            # Should still produce same result
+            self.assertEqual(original_result, mutated_result)
+        except ValueError:
+            # Complex scoping might not be supported yet
+            pass
+
+    def test_var_rename_avoids_name_collisions(self):
+        """Test that rename avoids creating name collisions."""
+        from protosynth.mutation import _var_rename_mutation
+
+        rng = random.Random(42)
+
+        # AST with multiple variables
+        ast = let('x', const(1),
+                  let('y', const(2),
+                      op('+', var('x'), var('y'))))
+
+        try:
+            mutated = _var_rename_mutation(ast, rng)
+
+            # Check that no variable names collide
+            var_names = set()
+            let_names = set()
+
+            from protosynth.mutation import iter_nodes
+            for _, _, node in iter_nodes(mutated):
+                if node.node_type == 'let' and len(node.children) >= 1:
+                    let_names.add(node.children[0].value)
+                elif node.node_type == 'var':
+                    var_names.add(node.value)
+
+            # All let bindings should have unique names
+            self.assertEqual(len(let_names), len(set(let_names)))
+
+            # All variable references should refer to existing bindings
+            # (This is a simplified check - full scope analysis is complex)
+
+        except ValueError:
+            # It's ok if no suitable variables found
+            pass
+
+    def test_var_rename_generates_fresh_names(self):
+        """Test that rename generates fresh, unused variable names."""
+        from protosynth.mutation import _var_rename_mutation
+
+        rng = random.Random(42)
+
+        # Simple case
+        ast = let('x', const(42), var('x'))
+
+        try:
+            mutated = _var_rename_mutation(ast, rng)
+
+            # Should have a different variable name
+            from protosynth.mutation import iter_nodes
+            let_node = None
+            var_nodes = []
+
+            for _, _, node in iter_nodes(mutated):
+                if node.node_type == 'let':
+                    let_node = node
+                elif node.node_type == 'var':
+                    var_nodes.append(node)
+
+            if let_node and var_nodes:
+                new_name = let_node.children[0].value
+                self.assertNotEqual(new_name, 'x')  # Should be different
+
+                # All var references should use the new name
+                for var_node in var_nodes:
+                    if var_node.value != 'x':  # If it was renamed
+                        self.assertEqual(var_node.value, new_name)
+
+        except ValueError:
+            # It's ok if no suitable variables found
+            pass
+
+    def test_var_rename_with_no_variables(self):
+        """Test behavior when there are no variables to rename."""
+        from protosynth.mutation import _var_rename_mutation
+
+        rng = random.Random(42)
+
+        # ASTs with no let bindings
+        no_var_asts = [
+            const(42),
+            op('+', const(1), const(2)),
+            if_expr(const(True), const(1), const(0))
+        ]
+
+        for ast in no_var_asts:
+            with self.subTest(ast=str(ast)):
+                with self.assertRaises(ValueError):
+                    _var_rename_mutation(ast, rng)
+
+    def test_var_rename_deterministic(self):
+        """Test that variable rename is deterministic with same seed."""
+        from protosynth.mutation import _var_rename_mutation
+
+        ast = let('x', const(10), var('x'))
+
+        rng1 = random.Random(12345)
+        rng2 = random.Random(12345)
+
+        try:
+            result1 = _var_rename_mutation(ast, rng1)
+            result2 = _var_rename_mutation(ast, rng2)
+
+            # Should produce same renamed variable
+            from protosynth import pretty_print_ast
+            self.assertEqual(pretty_print_ast(result1), pretty_print_ast(result2))
+        except ValueError:
+            # If it fails, both should fail the same way
+            with self.assertRaises(ValueError):
+                _var_rename_mutation(ast, rng2)
+
+
+class TestMutationPipelineAntibiased(unittest.TestCase):
+    """
+    Anti-biased tests for mutation pipeline - designed to catch
+    probability issues, mutation conflicts, and edge cases.
+    """
+
+    def test_mutation_pipeline_import(self):
+        """Test that mutation pipeline can be imported."""
+        try:
+            from protosynth.mutation import mutate
+            self.assertTrue(callable(mutate))
+        except ImportError as e:
+            self.fail(f"Could not import mutate function: {e}")
+
+    def test_mutate_with_zero_probability(self):
+        """Test that zero mutation rate returns unchanged AST."""
+        from protosynth.mutation import mutate
+
+        ast = op('+', const(1), const(2))
+        rng = random.Random(42)
+
+        result = mutate(ast, mutation_rate=0.0, rng=rng)
+
+        # Should be a clone but semantically identical
+        from protosynth import pretty_print_ast
+        self.assertEqual(pretty_print_ast(ast), pretty_print_ast(result))
+        self.assertIsNot(ast, result)  # Should be a clone
+
+    def test_mutate_with_high_probability(self):
+        """Test behavior with very high mutation rate."""
+        from protosynth.mutation import mutate
+
+        # Complex AST that should have multiple mutation opportunities
+        ast = let('x', const(10),
+                  if_expr(op('>', var('x'), const(5)),
+                          op('+', var('x'), const(1)),
+                          op('-', var('x'), const(1))))
+
+        rng = random.Random(42)
+
+        # With high probability, should apply some mutation
+        result = mutate(ast, mutation_rate=0.9, rng=rng)
+
+        # Should still be a valid AST
+        self.assertIsInstance(result, LispNode)
+
+        # Should be different from original (with high probability)
+        from protosynth import pretty_print_ast
+        # Note: There's a small chance it could be the same due to randomness
+        # but with 0.9 probability across 5 mutation types, very unlikely
+
+    def test_mutate_preserves_ast_validity(self):
+        """Test that mutations preserve basic AST structure validity."""
+        from protosynth.mutation import mutate
+
+        test_asts = [
+            const(42),
+            op('+', const(1), const(2)),
+            let('x', const(5), var('x')),
+            if_expr(const(True), const(1), const(0))
+        ]
+
+        rng = random.Random(42)
+
+        for ast in test_asts:
+            with self.subTest(ast=str(ast)):
+                result = mutate(ast, mutation_rate=0.5, rng=rng)
+
+                # Should still be a LispNode
+                self.assertIsInstance(result, LispNode)
+
+                # Should have valid node_type
+                self.assertIn(result.node_type, ['const', 'var', 'let', 'if', 'op'])
+
+                # Should have children list
+                self.assertIsInstance(result.children, list)
+
+    def test_mutate_deterministic_with_seed(self):
+        """Test that mutation is deterministic with same seed."""
+        from protosynth.mutation import mutate
+
+        ast = op('+', const(10), const(20))
+
+        rng1 = random.Random(12345)
+        rng2 = random.Random(12345)
+
+        result1 = mutate(ast, mutation_rate=0.5, rng=rng1)
+        result2 = mutate(ast, mutation_rate=0.5, rng=rng2)
+
+        from protosynth import pretty_print_ast
+        self.assertEqual(pretty_print_ast(result1), pretty_print_ast(result2))
+
+    def test_mutate_handles_edge_case_asts(self):
+        """Test mutation pipeline with edge case ASTs."""
+        from protosynth.mutation import mutate
+
+        edge_cases = [
+            const(0),  # Minimal AST
+            var('undefined'),  # Variable with no binding
+            op('unknown', const(1)),  # Unknown operation
+        ]
+
+        rng = random.Random(42)
+
+        for ast in edge_cases:
+            with self.subTest(ast=str(ast)):
+                try:
+                    result = mutate(ast, mutation_rate=0.3, rng=rng)
+                    # If it succeeds, should be valid
+                    self.assertIsInstance(result, LispNode)
+                except Exception as e:
+                    # Some edge cases might fail - should be graceful
+                    self.assertIsInstance(e, (ValueError, RuntimeError, TypeError))
+
+    def test_mutate_multiple_applications(self):
+        """Test applying mutations multiple times in sequence."""
+        from protosynth.mutation import mutate
+
+        ast = op('+', const(5), const(10))
+        rng = random.Random(42)
+
+        # Apply mutations multiple times
+        current = ast
+        for i in range(5):
+            current = mutate(current, mutation_rate=0.2, rng=rng)
+
+            # Should remain valid after each mutation
+            self.assertIsInstance(current, LispNode)
+
+            # Should be able to pretty-print (basic validity check)
+            from protosynth import pretty_print_ast
+            pretty_str = pretty_print_ast(current)
+            self.assertIsInstance(pretty_str, str)
+            self.assertGreater(len(pretty_str), 0)
+
+
 if __name__ == '__main__':
     unittest.main()

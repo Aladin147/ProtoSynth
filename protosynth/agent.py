@@ -6,7 +6,10 @@ an autonomous entity that can inspect, modify, and evaluate its own code.
 """
 
 from typing import Any, Optional
+import random
 from .core import LispNode, LispInterpreter, clone_ast, pretty_print_ast
+from .mutation import mutate
+from .verify import verify_ast
 
 
 class SelfModifyingAgent:
@@ -18,18 +21,24 @@ class SelfModifyingAgent:
     the self-modifying behavior through mutation and fitness evaluation.
     """
     
-    def __init__(self, initial_ast: LispNode, interpreter: Optional[LispInterpreter] = None):
+    def __init__(self, initial_ast: LispNode, interpreter: Optional[LispInterpreter] = None,
+                 mutation_rate: float = 0.15, max_mutation_attempts: int = 10):
         """
         Initialize the agent with an initial AST.
-        
+
         Args:
             initial_ast: The starting program as an AST
             interpreter: Optional custom interpreter (defaults to standard one)
+            mutation_rate: Probability of applying each mutation type (default: 0.15)
+            max_mutation_attempts: Maximum attempts to generate valid mutation (default: 10)
         """
         self.ast = clone_ast(initial_ast)  # Always work with a copy
         self.interpreter = interpreter or LispInterpreter()
+        self.mutation_rate = mutation_rate
+        self.max_mutation_attempts = max_mutation_attempts
         self.generation = 0
         self.fitness_history = []
+        self.rng = random.Random()  # Each agent has its own RNG
     
     def get_ast(self) -> LispNode:
         """
@@ -43,35 +52,55 @@ class SelfModifyingAgent:
     def mutate(self) -> 'SelfModifyingAgent':
         """
         Create a mutated version of this agent.
-        
-        For now, this is a placeholder that returns a copy of the current agent.
-        In Phase 2, this will implement actual mutation operations.
-        
+
+        Applies mutations to the AST and verifies the result. If verification
+        fails, retries up to max_mutation_attempts times.
+
         Returns:
-            A new SelfModifyingAgent with a mutated AST
+            A new SelfModifyingAgent with a mutated and verified AST
+
+        Raises:
+            RuntimeError: If unable to generate valid mutation after max attempts
         """
-        # Placeholder: just return a copy for now
-        mutated_agent = SelfModifyingAgent(self.ast, self.interpreter)
-        mutated_agent.generation = self.generation + 1
-        return mutated_agent
+        for attempt in range(self.max_mutation_attempts):
+            try:
+                # Apply mutation
+                mutated_ast = mutate(self.ast, self.mutation_rate, self.rng)
+
+                # Verify the mutated AST
+                is_valid, errors = verify_ast(mutated_ast)
+
+                if is_valid:
+                    # Create new agent with mutated AST
+                    mutated_agent = SelfModifyingAgent(
+                        mutated_ast,
+                        self.interpreter,
+                        self.mutation_rate,
+                        self.max_mutation_attempts
+                    )
+                    mutated_agent.generation = self.generation + 1
+                    mutated_agent.rng = random.Random(self.rng.randint(0, 2**32-1))  # New seed
+                    return mutated_agent
+
+                # If verification failed, try again
+                continue
+
+            except Exception as e:
+                # If mutation failed, try again
+                continue
+
+        # If all attempts failed, raise error
+        raise RuntimeError(f"Failed to generate valid mutation after {self.max_mutation_attempts} attempts")
     
     def verify(self) -> bool:
         """
         Verify that the current AST is syntactically valid and safe to execute.
-        
-        For now, this is a placeholder that always returns True.
-        In Phase 2, this will implement proper verification logic.
-        
+
         Returns:
             True if the AST passes verification, False otherwise
         """
-        # Placeholder: basic checks
-        try:
-            # Check if we can pretty-print the AST (basic syntax check)
-            pretty_print_ast(self.ast)
-            return True
-        except Exception:
-            return False
+        is_valid, errors = verify_ast(self.ast)
+        return is_valid
     
     def evaluate(self, input_data: Any = None) -> Any:
         """
