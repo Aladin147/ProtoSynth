@@ -7,9 +7,12 @@ an autonomous entity that can inspect, modify, and evaluate its own code.
 
 from typing import Any, Optional
 import random
+import logging
 from .core import LispNode, LispInterpreter, clone_ast, pretty_print_ast
 from .mutation import mutate
 from .verify import verify_ast
+
+logger = logging.getLogger(__name__)
 
 
 class SelfModifyingAgent:
@@ -71,6 +74,7 @@ class SelfModifyingAgent:
                 is_valid, errors = verify_ast(mutated_ast)
 
                 if is_valid:
+                    logger.info(f"Mutation successful on attempt {attempt + 1}")
                     # Create new agent with mutated AST
                     mutated_agent = SelfModifyingAgent(
                         mutated_ast,
@@ -83,6 +87,7 @@ class SelfModifyingAgent:
                     return mutated_agent
 
                 # If verification failed, try again
+                logger.debug(f"Mutation attempt {attempt + 1} failed verification: {errors}")
                 continue
 
             except Exception as e:

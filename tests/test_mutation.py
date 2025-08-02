@@ -871,5 +871,145 @@ class TestMutationPipelineAntibiased(unittest.TestCase):
             self.assertGreater(len(pretty_str), 0)
 
 
+class TestMutationFuzzHarness(unittest.TestCase):
+    """
+    Fuzz testing for mutation system - property-based testing to catch
+    edge cases and ensure mutations always produce valid, verifiable ASTs.
+    """
+
+    def test_ten_random_mutations_from_verified_seed(self):
+        """Test that 10 random mutations from verified seed always pass verifier."""
+        from protosynth.mutation import mutate
+        from protosynth.verify import verify_ast
+
+        # Start with verified seed ASTs
+        verified_seeds = [
+            const(42),
+            op('+', const(1), const(2)),
+            let('x', const(10), var('x')),
+            if_expr(op('>', const(5), const(3)), const(1), const(0)),
+            let('a', const(5),
+                let('b', const(10),
+                    op('+', var('a'), var('b'))))
+        ]
+
+        rng = random.Random(12345)  # Deterministic for reproducibility
+
+        for seed_ast in verified_seeds:
+            with self.subTest(seed=str(seed_ast)):
+                # Verify the seed is valid
+                is_valid, errors = verify_ast(seed_ast)
+                self.assertTrue(is_valid, f"Seed should be valid: {errors}")
+
+                # Apply 10 mutations
+                current_ast = seed_ast
+                for i in range(10):
+                    try:
+                        mutated_ast = mutate(current_ast, mutation_rate=0.3, rng=rng)
+
+                        # Every mutation should produce a verifiable AST
+                        is_valid, errors = verify_ast(mutated_ast)
+                        if not is_valid:
+                            from protosynth import pretty_print_ast
+                            self.fail(f"Mutation {i+1} should be valid: {errors}\n"
+                                    f"Original: {pretty_print_ast(current_ast)}\n"
+                                    f"Mutated: {pretty_print_ast(mutated_ast)}")
+
+                        current_ast = mutated_ast
+
+                    except Exception as e:
+                        self.fail(f"Mutation {i+1} failed unexpectedly: {e}")
+
+    def test_mutation_preserves_evaluability(self):
+        """Test that mutations preserve the ability to evaluate ASTs."""
+        from protosynth.mutation import mutate
+        from protosynth import LispInterpreter
+
+        interpreter = LispInterpreter()
+        rng = random.Random(42)
+
+        # Evaluable seed ASTs
+        evaluable_seeds = [
+            const(42),
+            op('+', const(10), const(5)),
+            let('x', const(7), op('*', var('x'), const(2))),
+            if_expr(op('<', const(3), const(5)), const(100), const(200))
+        ]
+
+        for seed_ast in evaluable_seeds:
+            with self.subTest(seed=str(seed_ast)):
+                # Original should be evaluable
+                try:
+                    original_result = interpreter.evaluate(seed_ast)
+                except Exception as e:
+                    self.fail(f"Seed AST should be evaluable: {e}")
+
+                # Apply mutation
+                try:
+                    mutated_ast = mutate(seed_ast, mutation_rate=0.5, rng=rng)
+
+                    # Mutated AST should also be evaluable
+                    mutated_result = interpreter.evaluate(mutated_ast)
+
+                    # Results might be different, but both should succeed
+                    self.assertIsNotNone(original_result)
+                    self.assertIsNotNone(mutated_result)
+
+                except Exception as e:
+                    # Some mutations might make ASTs non-evaluable (e.g., unbound vars)
+                    # but they should fail verification, not crash the interpreter
+                    from protosynth.verify import verify_ast
+                    is_valid, errors = verify_ast(mutated_ast)
+                    if is_valid:
+                        self.fail(f"Valid AST should be evaluable: {e}")
+
+    def test_mutation_stress_test(self):
+        """Stress test with many mutations on complex ASTs."""
+        from protosynth.mutation import mutate
+        from protosynth.verify import verify_ast
+
+        # Complex but valid AST
+        complex_ast = let('x', const(10),
+                         let('y', const(20),
+                             if_expr(op('>', var('x'), const(5)),
+                                    op('+', var('x'), var('y')),
+                                    op('-', var('y'), var('x')))))
+
+        rng = random.Random(999)
+        current_ast = complex_ast
+
+        # Apply 50 mutations
+        for i in range(50):
+            try:
+                mutated_ast = mutate(current_ast, mutation_rate=0.2, rng=rng)
+
+                # Should remain valid
+                is_valid, errors = verify_ast(mutated_ast)
+                self.assertTrue(is_valid, f"Stress test mutation {i+1} failed: {errors}")
+
+                current_ast = mutated_ast
+
+            except Exception as e:
+                self.fail(f"Stress test mutation {i+1} crashed: {e}")
+
+    def test_mutation_determinism_property(self):
+        """Property test: same seed should produce same mutations."""
+        from protosynth.mutation import mutate
+
+        test_ast = op('+', const(5), const(10))
+
+        # Same seed should produce identical results
+        for seed_value in [123, 456, 789]:
+            rng1 = random.Random(seed_value)
+            rng2 = random.Random(seed_value)
+
+            result1 = mutate(test_ast, mutation_rate=0.5, rng=rng1)
+            result2 = mutate(test_ast, mutation_rate=0.5, rng=rng2)
+
+            from protosynth import pretty_print_ast
+            self.assertEqual(pretty_print_ast(result1), pretty_print_ast(result2),
+                           f"Same seed {seed_value} should produce identical mutations")
+
+
 if __name__ == '__main__':
     unittest.main()

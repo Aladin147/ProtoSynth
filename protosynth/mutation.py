@@ -8,7 +8,10 @@ including AST traversal, mutation operations, and mutation pipelines.
 from typing import Iterator, Tuple, Optional, Any, Callable, Dict
 from enum import Enum
 import random
+import logging
 from .core import LispNode, clone_ast
+
+logger = logging.getLogger(__name__)
 
 
 def iter_nodes(ast: LispNode) -> Iterator[Tuple[Optional[LispNode], Optional[int], LispNode]]:
@@ -401,8 +404,13 @@ def mutate(ast: LispNode, mutation_rate: float = 0.15, rng: Optional[random.Rand
     # Pick one mutation to apply
     mutation_type, mutation_func = rng.choice(applicable_mutations)
 
+    logger.debug(f"Applying mutation: {mutation_type.value}")
+
     try:
-        return mutation_func(ast, rng)
+        result = mutation_func(ast, rng)
+        logger.debug(f"Mutation {mutation_type.value} succeeded")
+        return result
     except ValueError as e:
+        logger.debug(f"Mutation {mutation_type.value} failed: {e}")
         # If the chosen mutation fails, return original
         return clone_ast(ast)
