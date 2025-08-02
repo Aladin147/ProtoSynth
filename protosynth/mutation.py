@@ -265,6 +265,25 @@ def _var_rename_mutation(root: LispNode, rng: random.Random) -> LispNode:
     return mutated
 
 
+def _is_safe_replacement_position(parent: LispNode, child_idx: int) -> bool:
+    """
+    Check if a position is safe for arbitrary node replacement.
+
+    Some positions have structural constraints:
+    - First child of 'let' must be a variable (binding name)
+    - Second child of 'let' should not reference the variable being bound
+    """
+    if parent.node_type == 'let':
+        if child_idx == 0:  # Variable name position
+            return False  # Must remain a variable
+        elif child_idx == 1:  # Value expression position
+            # The value expression should not reference the variable being bound
+            # This is a complex check, so for now we'll be conservative
+            return False  # Avoid replacing value expressions in let bindings
+
+    return True
+
+
 def _subtree_insert_mutation(root: LispNode, rng: random.Random) -> LispNode:
     """
     Clone a random subtree and splice it into another location.
@@ -279,9 +298,6 @@ def _subtree_insert_mutation(root: LispNode, rng: random.Random) -> LispNode:
     Raises:
         ValueError: If no suitable locations found for insertion
     """
-    # For now, implement a simple version that duplicates a subtree
-    # More sophisticated versions could insert into operations that accept variable arity
-
     # Find all nodes that could be duplicated
     all_nodes = list(iter_nodes(root))
     if len(all_nodes) < 2:
@@ -299,10 +315,11 @@ def _subtree_insert_mutation(root: LispNode, rng: random.Random) -> LispNode:
     source_parent, source_idx, source_node = rng.choice(source_candidates)
     source_clone = clone_ast(source_node)
 
-    # Find insertion points (operations that could accept an additional argument)
-    # For simplicity, we'll replace an existing node rather than truly inserting
+    # Find safe insertion points that don't violate structural constraints
     target_candidates = [(p, ci, n) for p, ci, n in cloned_nodes
-                        if p is not None and n is not source_node]
+                        if (p is not None and
+                            n is not source_node and
+                            _is_safe_replacement_position(p, ci))]
 
     if not target_candidates:
         raise ValueError("No suitable insertion points found")
@@ -329,15 +346,17 @@ def _subtree_delete_mutation(root: LispNode, rng: random.Random) -> LispNode:
     Raises:
         ValueError: If no suitable nodes found for deletion
     """
-    # Find all non-root nodes that can be deleted
-    all_nodes = [(p, ci, n) for p, ci, n in iter_nodes(root) if p is not None]
+    # Find all non-root nodes that can be safely deleted (respecting structural constraints)
+    all_nodes = [(p, ci, n) for p, ci, n in iter_nodes(root)
+                 if p is not None and _is_safe_replacement_position(p, ci)]
 
     if not all_nodes:
         raise ValueError("No suitable nodes found for deletion")
 
     # Clone the AST
     mutated = clone_ast(root)
-    cloned_nodes = [(p, ci, n) for p, ci, n in iter_nodes(mutated) if p is not None]
+    cloned_nodes = [(p, ci, n) for p, ci, n in iter_nodes(mutated)
+                    if p is not None and _is_safe_replacement_position(p, ci)]
 
     # Pick a node to delete
     target_parent, target_idx, target_node = rng.choice(cloned_nodes)
@@ -363,7 +382,38 @@ MUTATION_REGISTRY: Dict[MutationType, Callable[[LispNode, random.Random], LispNo
 }
 
 
-def mutate(ast: LispNode, mutation_rate: float = 0.15, rng: Optional[random.Random] = None) -> LispNode:
+def _is_mutation_applicable(ast: LispNode, mutation_type: MutationType) -> bool:
+    """
+    Quick check if a mutation type is applicable to an AST without actually running it.
+
+    This is more efficient than running the mutation to test applicability.
+    """
+    if mutation_type == MutationType.OP_SWAP:
+        # Need at least one operation node
+        return any(node.node_type == 'op' for _, _, node in iter_nodes(ast))
+
+    elif mutation_type == MutationType.CONST_PERTURB:
+        # Need at least one numeric constant
+        return any(node.node_type == 'const' and isinstance(node.value, (int, float)) and not isinstance(node.value, bool)
+                  for _, _, node in iter_nodes(ast))
+
+    elif mutation_type == MutationType.VAR_RENAME:
+        # Need at least one let binding
+        return any(node.node_type == 'let' for _, _, node in iter_nodes(ast))
+
+    elif mutation_type in [MutationType.SUBTREE_INSERT, MutationType.SUBTREE_DELETE]:
+        # Need at least 2 nodes and some safe replacement positions
+        nodes = list(iter_nodes(ast))
+        if len(nodes) < 2:
+            return False
+        return any(_is_safe_replacement_position(parent, child_idx)
+                  for parent, child_idx, node in nodes if parent is not None)
+
+    return True  # Default to applicable
+
+
+def mutate(ast: LispNode, mutation_rate: float = 0.15, rng: Optional[random.Random] = None,
+           max_attempts: int = 3) -> LispNode:
     """
     Apply mutations to an AST with given probability.
 
@@ -374,43 +424,61 @@ def mutate(ast: LispNode, mutation_rate: float = 0.15, rng: Optional[random.Rand
         ast: The AST to mutate
         mutation_rate: Probability of applying each mutation type (default: 0.15)
         rng: Random number generator (creates new one if None)
+        max_attempts: Maximum attempts if mutations fail (default: 3)
 
     Returns:
         A mutated clone of the AST, or the original AST if no mutations applied
 
     Raises:
-        ValueError: If the AST is invalid or no mutations are possible
+        ValueError: If the AST is invalid
     """
     if rng is None:
         rng = random.Random()
 
-    # Collect applicable mutations
-    applicable_mutations = []
+    # Validate input AST
+    if not isinstance(ast, LispNode):
+        raise ValueError("Input must be a LispNode")
+
+    # Collect potentially applicable mutations
+    candidate_mutations = []
 
     for mutation_type, mutation_func in MUTATION_REGISTRY.items():
-        if rng.random() < mutation_rate:
-            try:
-                # Test if this mutation is applicable
-                mutation_func(ast, rng)
-                applicable_mutations.append((mutation_type, mutation_func))
-            except ValueError:
-                # This mutation type is not applicable to this AST
-                continue
+        if rng.random() < mutation_rate and _is_mutation_applicable(ast, mutation_type):
+            candidate_mutations.append((mutation_type, mutation_func))
 
-    if not applicable_mutations:
-        # No mutations applicable or selected, return clone of original
+    if not candidate_mutations:
+        logger.debug("No mutations selected or applicable")
         return clone_ast(ast)
 
-    # Pick one mutation to apply
-    mutation_type, mutation_func = rng.choice(applicable_mutations)
+    # Try mutations with retry logic
+    for attempt in range(max_attempts):
+        # Pick one mutation to apply
+        mutation_type, mutation_func = rng.choice(candidate_mutations)
 
-    logger.debug(f"Applying mutation: {mutation_type.value}")
+        logger.debug(f"Applying mutation: {mutation_type.value} (attempt {attempt + 1})")
 
-    try:
-        result = mutation_func(ast, rng)
-        logger.debug(f"Mutation {mutation_type.value} succeeded")
-        return result
-    except ValueError as e:
-        logger.debug(f"Mutation {mutation_type.value} failed: {e}")
-        # If the chosen mutation fails, return original
-        return clone_ast(ast)
+        try:
+            result = mutation_func(ast, rng)
+            logger.debug(f"Mutation {mutation_type.value} succeeded")
+            return result
+
+        except (ValueError, RuntimeError, TypeError) as e:
+            logger.debug(f"Mutation {mutation_type.value} failed: {e}")
+
+            # Remove this mutation from candidates for next attempt
+            candidate_mutations = [(mt, mf) for mt, mf in candidate_mutations if mt != mutation_type]
+
+            if not candidate_mutations:
+                logger.debug("No more candidate mutations available")
+                break
+
+        except Exception as e:
+            logger.warning(f"Unexpected error in mutation {mutation_type.value}: {e}")
+            # Remove this mutation and continue
+            candidate_mutations = [(mt, mf) for mt, mf in candidate_mutations if mt != mutation_type]
+
+            if not candidate_mutations:
+                break
+
+    logger.debug("All mutation attempts failed, returning original")
+    return clone_ast(ast)
