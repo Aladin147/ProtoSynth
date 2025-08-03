@@ -18,10 +18,31 @@ except ImportError:
 from typing import List, Dict, Tuple, Callable, Optional, Any
 from dataclasses import dataclass
 from collections import deque, defaultdict
+import math
 
 from .core import LispNode, LispInterpreter
 from .envs import periodic, k_order_markov, noisy
 from .eval import evaluate_program_on_window
+
+
+# Deterministic progression constants (easy -> hard)
+ENV_ORDER = ["periodic_simple", "periodic_complex", "markov_simple", "markov_complex"]
+MIN_STAY = 2          # need at least two gens to learn per env
+MAX_STAY = 3          # force switch after this many gens
+PROG_EPS = 1e-4       # min learning progress to keep staying
+WINDOW = 3            # smoothing window for progress
+
+@dataclass
+class CurState:
+    idx: int = 0
+    stay: int = 0
+    last_best: float = float("-inf")
+    prog_hist: deque = None
+    switched_once: bool = False
+
+    def __post_init__(self):
+        if self.prog_hist is None:
+            self.prog_hist = deque(maxlen=WINDOW)
 
 
 @dataclass

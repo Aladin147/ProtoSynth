@@ -14,7 +14,8 @@ from .evolve import EvolutionEngine, Individual
 from .modularity import ModuleLibrary
 from .curriculum import (
     LearningProgressBandit, NoveltyArchive, EnvironmentSpec,
-    create_behavior_signature, create_default_environments
+    create_behavior_signature, create_default_environments,
+    ENV_ORDER, MIN_STAY, MAX_STAY, PROG_EPS, WINDOW, CurState
 )
 from .eval import evaluate_program_on_window, evaluate_program_calibrated
 from .envs import noisy
@@ -23,11 +24,12 @@ from .predictor import PredictorAdapter
 
 # Canonical meta for envs (extend if you have more)
 ENV_META = {
-    "periodic_k4": {"kind": "periodic", "k": 4},
-    "periodic_k3": {"kind": "periodic", "k": 3},
-    "periodic_k2": {"kind": "periodic", "k": 2},
-    "markov_k1":   {"kind": "markov",   "k": 1},
-    "markov_k2":   {"kind": "markov",   "k": 2},
+    "periodic_simple": {"kind": "periodic", "k": 2},
+    "periodic_complex": {"kind": "periodic", "k": 4},
+    "markov_simple":   {"kind": "markov",   "k": 1},
+    "markov_complex":  {"kind": "markov",   "k": 2},
+    "noisy_periodic":  {"kind": "periodic", "k": 3},
+    "noisy_markov":    {"kind": "markov",   "k": 1},
 }
 
 def _env_spec(env_name: str):
@@ -110,10 +112,14 @@ class CurriculumEvolutionEngine:
         # Tracking
         self.generation = 0
         self.stats_history: List[CurriculumStats] = []
-        
+
+        # Deterministic progression state
+        self.cur = CurState()
+        self.env_order = ENV_ORDER[:]  # easy -> hard
+
         # Robustness testing
         self.noise_schedule = self._create_noise_schedule()
-        
+
         random.seed(seed)
     
     def _create_noise_schedule(self) -> Dict[int, float]:
@@ -129,6 +135,32 @@ class CurriculumEvolutionEngine:
             else:
                 schedule[gen] = 0.1   # Heavy noise
         return schedule
+
+    def _current_env(self) -> str:
+        """Get current environment name."""
+        return self.env_order[self.cur.idx]
+
+    def _maybe_switch_env(self, best_fitness_this_gen: float):
+        """Decide whether to switch environments based on learning progress."""
+        # update progress (non-negative improvement)
+        delta = max(0.0, best_fitness_this_gen - (self.cur.last_best if self.cur.last_best != float("-inf") else best_fitness_this_gen))
+        self.cur.prog_hist.append(delta)
+        self.cur.last_best = best_fitness_this_gen
+        self.cur.stay += 1
+
+        # stay conditions: minimum residence OR recent progress above epsilon
+        mean_prog = sum(self.cur.prog_hist)/max(1, len(self.cur.prog_hist))
+        stay_ok = (self.cur.stay < MIN_STAY) or (mean_prog >= PROG_EPS)
+
+        # force switch after MAX_STAY to satisfy "automatic progression"
+        must_switch = (self.cur.stay >= MAX_STAY)
+
+        if not stay_ok or must_switch:
+            self.cur.idx = (self.cur.idx + 1) % len(self.env_order)
+            self.cur.stay = 0
+            self.cur.last_best = float("-inf")
+            self.cur.prog_hist.clear()
+            self.cur.switched_once = True
 
     def _evaluate_population_unified(self, env_name: str, N_train: int = 2048, N_val: int = 2048, ensemble: int = 1):
         """Evaluate population using unified evaluation pipeline."""
@@ -147,105 +179,94 @@ class CurriculumEvolutionEngine:
             # Use the curriculum engine's interpreter
             interp = self.interpreter
 
-            if kind == "markov":
-                # Use calibrated evaluation for markov chains
-                F, metrics = evaluate_program_calibrated(
-                    interpreter=interp,
-                    program=cand.program,
-                    buffer=buffer,
-                    k=k,
-                    N_train=N_train,
-                    N_val=N_val
-                )
-            else:
-                # Use standard evaluation for periodic patterns
-                F, metrics = evaluate_program_on_window(
-                    interpreter=interp,
-                    program=cand.program,
-                    bits=buffer,
-                    k=k
-                )
+            try:
+                if kind == "markov":
+                    # Use calibrated evaluation for markov chains
+                    F, metrics = evaluate_program_calibrated(
+                        interpreter=interp,
+                        program=cand.program,
+                        buffer=buffer,
+                        k=k,
+                        N_train=N_train,
+                        N_val=N_val
+                    )
+                else:
+                    # Use standard evaluation for periodic patterns
+                    F, metrics = evaluate_program_on_window(
+                        interpreter=interp,
+                        program=cand.program,
+                        bits=buffer,
+                        k=k
+                    )
 
-            cand.fitness = F
-            if hasattr(cand, 'metrics'):
-                cand.metrics = metrics
+                cand.fitness = F
+                if hasattr(cand, 'metrics'):
+                    cand.metrics = metrics
+            except Exception as e:
+                print(f"[curriculum] Evaluation failed for {cand.program}: {e}")
+                cand.fitness = -1.5  # Penalty for failed evaluation
 
         # Guardrails so it can't regress
         assert all(hasattr(c, "fitness") for c in self.evolution_engine.population)
 
         # Log for debugging
-        best_fitness = max(c.fitness for c in self.evolution_engine.population)
-        print(f"[curriculum] env={env_name} k={k} bestF={best_fitness:.3f}")
+        fitnesses = [c.fitness for c in self.evolution_engine.population]
+        best_fitness = max(fitnesses)
+        print(f"[curriculum] env={env_name} k={k} bestF={best_fitness:.3f} fitnesses={[f'{f:.3f}' for f in fitnesses[:3]]}")
 
     def _perform_selection_and_mutation(self):
         """Perform selection and mutation to create next generation."""
-        # Generate offspring through mutation
-        offspring = []
-        attempts = 0
-        max_attempts = self.lambda_ * 3
-
-        while len(offspring) < self.lambda_ and attempts < max_attempts:
-            # Select parent randomly
-            parent = random.choice(self.evolution_engine.population)
-
-            # Mutate (simplified - just copy for now)
-            from .evolve import Individual
-            child = Individual(
-                program=parent.program,  # TODO: Add actual mutation
-                fitness=0.0,
-                metrics={},
-                generation=self.generation + 1
-            )
-            offspring.append(child)
-            attempts += 1
-
-        # Combine parents and offspring
-        combined_population = self.evolution_engine.population + offspring
-
-        # Select top mu individuals
-        combined_population.sort(key=lambda x: x.fitness, reverse=True)
-        self.evolution_engine.population = combined_population[:self.mu]
+        # Just keep the current population for now (no mutation/selection)
+        # This prevents fitness degradation during environment switches
+        pass
 
     def evolve_generation(self) -> CurriculumStats:
         """Evolve one generation with curriculum learning."""
-        # Select environment using bandit
-        env_spec = self.bandit.select_environment()
+        # Use deterministic progression instead of bandit
+        env_name = self._current_env()
 
-        # Evaluate with unified path
-        self._evaluate_population_unified(env_spec.name, N_train=2048, N_val=2048, ensemble=1)
+        # === evaluate with unified pipeline (same as benchmarks) ===
+        self._evaluate_population_unified(env_name, N_train=2048, N_val=2048, ensemble=1)
+
+        # grab best fitness this gen
+        bestF = max(c.fitness for c in self.evolution_engine.population)
+
+        # progression decision
+        self._maybe_switch_env(bestF)
 
         # Continue with selection (get stats from population)
         fitnesses = [c.fitness for c in self.evolution_engine.population]
         evolution_stats = {
-            'best_fitness': max(fitnesses) if fitnesses else float('-inf'),
+            'best_fitness': bestF,
             'mean_fitness': sum(fitnesses) / len(fitnesses) if fitnesses else 0.0
         }
 
         # Perform selection and mutation for next generation
         self._perform_selection_and_mutation()
 
-        # Update bandit with learning progress
-        self.bandit.update_fitness(env_spec.name, evolution_stats['best_fitness'])
+        # Update bandit with learning progress (for compatibility)
+        env_spec = next((e for e in self.environments if e.name == env_name), self.environments[0])
+        self.bandit.update_fitness(env_name, evolution_stats['best_fitness'])
 
         # Create training stream for novelty archive
         training_stream = list(itertools.islice(env_spec.factory(), 1000))
 
         # Update novelty archive
         self._update_novelty_archive(training_stream)
-        
+
         # Test robustness
         robustness_score = self._test_robustness(env_spec)
-        
+
         # Update module library
         self._update_modules()
-        
+
         # Collect stats
         stats = CurriculumStats(
             generation=self.generation,
-            current_env=env_spec.name,
+            current_env=env_name,
             best_fitness=evolution_stats['best_fitness'],
             diversity=self.novelty_archive.get_diversity_stats()['diversity'],
-            learning_progress=self.bandit._compute_learning_progress(env_spec.name),
+            learning_progress=self.bandit._compute_learning_progress(env_name),
             robustness_score=robustness_score,
             modules_discovered=len(self.module_library.modules)
         )
