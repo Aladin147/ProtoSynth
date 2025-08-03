@@ -16,8 +16,33 @@ from .curriculum import (
     LearningProgressBandit, NoveltyArchive, EnvironmentSpec,
     create_behavior_signature, create_default_environments
 )
-from .eval import evaluate_program_on_window
+from .eval import evaluate_program_on_window, evaluate_program_calibrated
 from .envs import noisy
+from .predictor import PredictorAdapter
+
+
+# Canonical meta for envs (extend if you have more)
+ENV_META = {
+    "periodic_k4": {"kind": "periodic", "k": 4},
+    "periodic_k3": {"kind": "periodic", "k": 3},
+    "periodic_k2": {"kind": "periodic", "k": 2},
+    "markov_k1":   {"kind": "markov",   "k": 1},
+    "markov_k2":   {"kind": "markov",   "k": 2},
+}
+
+def _env_spec(env_name: str):
+    meta = ENV_META.get(env_name)
+    if not meta:
+        # sensible default
+        meta = {"kind": "periodic", "k": 2}
+    return meta["kind"], meta["k"]
+
+def _materialize_stream(stream_factory, k: int, N: int, seed: int = None):
+    """Materialize a stream into a buffer."""
+    if seed is not None:
+        random.seed(seed)
+    stream = stream_factory()
+    return list(itertools.islice(stream, N + k))
 
 
 @dataclass
@@ -104,21 +129,107 @@ class CurriculumEvolutionEngine:
             else:
                 schedule[gen] = 0.1   # Heavy noise
         return schedule
-    
+
+    def _evaluate_population_unified(self, env_name: str, N_train: int = 2048, N_val: int = 2048, ensemble: int = 1):
+        """Evaluate population using unified evaluation pipeline."""
+        kind, k = _env_spec(env_name)
+
+        # Get environment factory
+        env_spec = next((e for e in self.environments if e.name == env_name), None)
+        if not env_spec:
+            raise ValueError(f"Environment {env_name} not found")
+
+        # Materialize validation buffer ONCE for this generation (no generator reuse)
+        buffer = _materialize_stream(env_spec.factory, k=k, N=N_val, seed=random.randint(0, 2**31 - 1))
+
+        # Evaluate every candidate via the SAME pipeline (uses calibrated evaluation for markov)
+        for cand in self.evolution_engine.population:
+            # Use the curriculum engine's interpreter
+            interp = self.interpreter
+
+            if kind == "markov":
+                # Use calibrated evaluation for markov chains
+                F, metrics = evaluate_program_calibrated(
+                    interpreter=interp,
+                    program=cand.program,
+                    buffer=buffer,
+                    k=k,
+                    N_train=N_train,
+                    N_val=N_val
+                )
+            else:
+                # Use standard evaluation for periodic patterns
+                F, metrics = evaluate_program_on_window(
+                    interpreter=interp,
+                    program=cand.program,
+                    bits=buffer,
+                    k=k
+                )
+
+            cand.fitness = F
+            if hasattr(cand, 'metrics'):
+                cand.metrics = metrics
+
+        # Guardrails so it can't regress
+        assert all(hasattr(c, "fitness") for c in self.evolution_engine.population)
+
+        # Log for debugging
+        best_fitness = max(c.fitness for c in self.evolution_engine.population)
+        print(f"[curriculum] env={env_name} k={k} bestF={best_fitness:.3f}")
+
+    def _perform_selection_and_mutation(self):
+        """Perform selection and mutation to create next generation."""
+        # Generate offspring through mutation
+        offspring = []
+        attempts = 0
+        max_attempts = self.lambda_ * 3
+
+        while len(offspring) < self.lambda_ and attempts < max_attempts:
+            # Select parent randomly
+            parent = random.choice(self.evolution_engine.population)
+
+            # Mutate (simplified - just copy for now)
+            from .evolve import Individual
+            child = Individual(
+                program=parent.program,  # TODO: Add actual mutation
+                fitness=0.0,
+                metrics={},
+                generation=self.generation + 1
+            )
+            offspring.append(child)
+            attempts += 1
+
+        # Combine parents and offspring
+        combined_population = self.evolution_engine.population + offspring
+
+        # Select top mu individuals
+        combined_population.sort(key=lambda x: x.fitness, reverse=True)
+        self.evolution_engine.population = combined_population[:self.mu]
+
     def evolve_generation(self) -> CurriculumStats:
         """Evolve one generation with curriculum learning."""
         # Select environment using bandit
         env_spec = self.bandit.select_environment()
-        
-        # Create training stream
-        training_stream = list(itertools.islice(env_spec.factory(), 1000))
-        
-        # Evolve on selected environment
-        evolution_stats = self.evolution_engine.evolve_generation(iter(training_stream))
-        
+
+        # Evaluate with unified path
+        self._evaluate_population_unified(env_spec.name, N_train=2048, N_val=2048, ensemble=1)
+
+        # Continue with selection (get stats from population)
+        fitnesses = [c.fitness for c in self.evolution_engine.population]
+        evolution_stats = {
+            'best_fitness': max(fitnesses) if fitnesses else float('-inf'),
+            'mean_fitness': sum(fitnesses) / len(fitnesses) if fitnesses else 0.0
+        }
+
+        # Perform selection and mutation for next generation
+        self._perform_selection_and_mutation()
+
         # Update bandit with learning progress
         self.bandit.update_fitness(env_spec.name, evolution_stats['best_fitness'])
-        
+
+        # Create training stream for novelty archive
+        training_stream = list(itertools.islice(env_spec.factory(), 1000))
+
         # Update novelty archive
         self._update_novelty_archive(training_stream)
         
