@@ -182,12 +182,11 @@ def check_module_contracts(ast: LispNode, module_library) -> List[str]:
             module_name = node.value
             args = node.children if node.children else []
 
-            # Check if module exists
-            if module_name not in module_library.modules:
+            # Check if module exists (with version handling)
+            module = module_library._find_module(module_name)
+            if module is None:
                 errors.append(f"Unknown module: {module_name}")
                 continue
-
-            module = module_library.modules[module_name]
 
             # Validate contract if present
             if module.contract:

@@ -961,10 +961,11 @@ class ModuleLibrary:
         module_name = call_node.value
         args = call_node.children
 
-        if module_name not in self.modules:
-            raise ValueError(f"Module {module_name} not found")
-
-        module = self.modules[module_name]
+        # Find the module (with version handling)
+        module = self._find_module(module_name)
+        if module is None:
+            available = [k for k in self.modules.keys() if k.startswith(module_name)]
+            raise ValueError(f"Module {module_name} not found. Available: {available}")
 
         # Create variable substitution mapping
         var_mapping = {}
