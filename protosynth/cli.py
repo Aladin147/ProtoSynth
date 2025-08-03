@@ -291,8 +291,12 @@ def _run_determinism_check(args):
 if __name__ == "__main__":
     if len(sys.argv) > 1:
         if sys.argv[1] == "replay":
+            # Remove 'replay' from args and call replay_main
+            sys.argv.pop(1)
             replay_main()
         elif sys.argv[1] == "info":
+            # Remove 'info' from args and call info_main
+            sys.argv.pop(1)
             info_main()
         else:
             evolve_main()
