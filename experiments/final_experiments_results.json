@@ -1,0 +1,15 @@
+{
+  "experiment_suite": "protosynth_final_validation",
+  "timestamp": 1754177124.0007246,
+  "completed_experiments": 4,
+  "successful_experiments": 1,
+  "overall_success_rate": 0.25,
+  "total_runtime_seconds": 166.18153595924377,
+  "individual_results": {
+    "scaling_laws": {
+      "experiment": "scaling_laws",
+      "total_configs": 48,
+      "successful_configs": 48,
+      "success_rate": 1.0,
+      "analysis": {
+        "scaling_detected": 

@@ -34,7 +34,7 @@ def check_arity(ast: LispNode) -> Tuple[bool, List[str]]:
     }
 
     # Valid node types
-    valid_node_types = {'const', 'var', 'let', 'if', 'op'}
+    valid_node_types = {'const', 'var', 'let', 'if', 'op', 'call'}
 
     for parent, child_idx, node in iter_nodes(ast):
         # Check for valid node types
@@ -94,14 +94,19 @@ def check_free_vars(ast: LispNode) -> Tuple[bool, List[str]]:
                 var_node = node.children[0]
                 if var_node.node_type == 'var':
                     var_name = var_node.value
-                    
+
                     # Check the value expression with current scope
                     check_scope(node.children[1], bound_vars)
-                    
+
                     # Check the body with extended scope
                     extended_scope = bound_vars | {var_name}
                     check_scope(node.children[2], extended_scope)
                     return  # Don't process children again
+
+        elif node.node_type == 'call':
+            # Module calls: variables in arguments are parameters, not free variables
+            # Skip variable checking for module call arguments
+            return
         
         # Process all children with current scope
         for child in node.children:
@@ -159,26 +164,63 @@ def check_node_count(ast: LispNode, max_nodes: int = 100) -> Tuple[bool, List[st
     return len(errors) == 0, errors
 
 
-def verify_ast(ast: LispNode, max_depth: int = 10, max_nodes: int = 100) -> Tuple[bool, List[str]]:
+def check_module_contracts(ast: LispNode, module_library) -> List[str]:
+    """
+    Check that all module calls satisfy their contracts.
+
+    Args:
+        ast: The AST to check
+        module_library: Module library with contracts
+
+    Returns:
+        List of error messages
+    """
+    errors = []
+
+    for _, _, node in iter_nodes(ast):
+        if node.node_type == 'call':
+            module_name = node.value
+            args = node.children if node.children else []
+
+            # Check if module exists
+            if module_name not in module_library.modules:
+                errors.append(f"Unknown module: {module_name}")
+                continue
+
+            module = module_library.modules[module_name]
+
+            # Validate contract if present
+            if module.contract:
+                is_valid, contract_errors = module.contract.validate_call(args)
+                if not is_valid:
+                    for error in contract_errors:
+                        errors.append(f"Module {module_name}: {error}")
+
+    return errors
+
+
+def verify_ast(ast: LispNode, max_depth: int = 10, max_nodes: int = 100,
+               module_library=None) -> Tuple[bool, List[str]]:
     """
     Perform comprehensive verification of an AST.
-    
+
     This function runs all verification checks and returns the combined results.
-    
+
     Args:
         ast: The AST to verify
         max_depth: Maximum allowed depth
         max_nodes: Maximum allowed number of nodes
-        
+        module_library: Optional module library for contract checking
+
     Returns:
         Tuple of (is_valid, error_messages)
     """
     all_errors = []
-    
+
     # Check basic structure
     if not isinstance(ast, LispNode):
         return False, ["AST root must be a LispNode"]
-    
+
     # Run all verification checks
     checks = [
         check_arity(ast),
@@ -186,9 +228,14 @@ def verify_ast(ast: LispNode, max_depth: int = 10, max_nodes: int = 100) -> Tupl
         check_depth(ast, max_depth),
         check_node_count(ast, max_nodes),
     ]
-    
+
     for is_valid, errors in checks:
         if not is_valid:
             all_errors.extend(errors)
-    
+
+    # Check module contracts if library provided
+    if module_library:
+        contract_errors = check_module_contracts(ast, module_library)
+        all_errors.extend(contract_errors)
+
     return len(all_errors) == 0, all_errors

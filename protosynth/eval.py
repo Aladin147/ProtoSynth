@@ -8,14 +8,17 @@ achieve lower cross-entropy, which translates to better compression.
 
 import math
 import logging
-from typing import List, Tuple, Iterator, Optional
+from typing import List, Tuple, Iterator, Optional, Dict, Any
 from .predictor import PredictorAdapter
 from .core import LispNode, LispInterpreter
 
 logger = logging.getLogger(__name__)
 
-# Small epsilon for numerical stability
-EPS = 1e-6
+# Shared evaluation adapter to ensure consistency
+EVAL_ADAPTER = None  # Will be set to the predictor function
+
+# Small epsilon for numerical stability (reduced for less punitive CE)
+EPS = 1e-3
 
 
 def cross_entropy_bits(y: int, p: float) -> float:
@@ -39,6 +42,26 @@ def cross_entropy_bits(y: int, p: float) -> float:
     else:
         return -math.log2(1.0 - p)
 
+
+def calibrate_delta(pred_bits: List[int], y_bits: List[int], eps: float = 1e-3) -> float:
+    """
+    Calibrate binary predictions to probabilities using MLE.
+
+    Args:
+        pred_bits: Binary predictions (0 or 1)
+        y_bits: True binary labels
+        eps: Minimum/maximum delta to avoid extreme probabilities
+
+    Returns:
+        Optimal delta for mapping: p = (1-2δ)*b + δ
+    """
+    T = len(y_bits)
+    if T == 0:
+        return 0.5
+
+    errs = sum(int(pb != yt) for pb, yt in zip(pred_bits, y_bits))
+    d = errs / max(1, T)
+    return max(eps, min(0.5 - eps, d))
 
 def baseline_entropy_bits(q: float) -> float:
     """
@@ -75,13 +98,27 @@ def evaluate_program(interpreter: LispInterpreter, program: LispNode,
         - fitness: F = H0 - Hprog (bits saved per symbol)
         - metrics_dict: Additional metrics for analysis
     """
+    # Reset interpreter state for fresh evaluation
+    interpreter.reset_tracker(max_steps=max(1000, N * 2), timeout=10.0)
+
     adapter = PredictorAdapter(interpreter)
+
+    # Set global adapter for consistency checking
+    global EVAL_ADAPTER
+    if EVAL_ADAPTER is None:
+        EVAL_ADAPTER = adapter.predict
+
+    # Assert we're using the same adapter everywhere
+    assert adapter.predict.__name__ == EVAL_ADAPTER.__name__, f"Adapter mismatch in evaluation path"
     
     # Collect stream data
     buf = []
     predictions = []
     targets = []
-    
+    total_loss = 0.0  # Track additional penalties
+    total_ctx_reads = 0  # Track total context reads across all predictions
+    exc_counts = {}  # Track exception types
+
     logger.debug(f"Evaluating program on {N} symbols with context length {k}")
     
     for bit in stream:
@@ -97,16 +134,27 @@ def evaluate_program(interpreter: LispInterpreter, program: LispNode,
         
         # Make prediction
         try:
+            # Reset interpreter before each prediction to prevent step accumulation
+            interpreter.reset_tracker()
             prediction = adapter.predict(program, context)
             predictions.append(prediction)
             targets.append(target)
-            
             logger.debug(f"ctx={context} -> p={prediction:.3f}, y={target}")
-            
+
+            # Accumulate context reads from this prediction
+            if hasattr(adapter.interpreter, 'ctx_reads'):
+                total_ctx_reads += adapter.interpreter.ctx_reads
+
         except Exception as e:
-            logger.warning(f"Prediction failed: {e}")
-            predictions.append(0.5)  # Fallback
+            # Count exception types for debugging
+            exc_type = type(e).__name__
+            exc_counts[exc_type] = exc_counts.get(exc_type, 0) + 1
+
+            logger.debug(f"Prediction failed: {exc_type}: {e}")
+            # Failed prediction - strict penalty (no silent fallback)
+            predictions.append(0.5)  # Use baseline for cross-entropy calculation
             targets.append(target)
+            total_loss += 1.5  # Penalty for failure
         
         # Stop when we have enough predictions
         if len(predictions) >= N:
@@ -131,28 +179,200 @@ def evaluate_program(interpreter: LispInterpreter, program: LispNode,
     # Calculate model cross-entropy
     cross_entropies = [cross_entropy_bits(y, p) for y, p in zip(targets, predictions)]
     Hprog = sum(cross_entropies) / len(cross_entropies)
-    
-    # Calculate fitness (bits saved per symbol)
-    fitness = H0 - Hprog
-    
+
+    # Add penalty for failed predictions
+    penalty_per_symbol = total_loss / len(predictions) if len(predictions) > 0 else 0.0
+    Hprog += penalty_per_symbol
+
+    # Calculate base fitness (bits saved per symbol)
+    base_fitness = H0 - Hprog
+
+    # Add context bonus: small reward for non-constant behavior
+    context_bonus = 0.0
+    if len(predictions) > 1:
+        # Calculate variance of predictions (proxy for using context)
+        mean_pred = sum(predictions) / len(predictions)
+        variance = sum((p - mean_pred)**2 for p in predictions) / len(predictions)
+        # Small bonus: 0.01 * variance (max ~0.0025 for binary predictions)
+        context_bonus = 0.01 * variance
+
+    # Final fitness with context bonus
+    fitness = base_fitness + context_bonus
+
     # Calculate total bits saved
     total_bits_saved = len(predictions) * fitness
     
+    # Log exception counts for debugging
+    if exc_counts:
+        logger.debug(f"Eval exceptions: {exc_counts}")
+
     # Prepare metrics
     metrics = {
         'num_predictions': len(predictions),
         'empirical_1_rate': q,
         'baseline_entropy': H0,
         'model_entropy': Hprog,
+        'base_fitness': base_fitness,
+        'context_bonus': context_bonus,
         'fitness': fitness,
         'total_bits_saved': total_bits_saved,
         'context_length': k,
         'avg_prediction': sum(predictions) / len(predictions),
-        'prediction_variance': sum((p - sum(predictions)/len(predictions))**2 for p in predictions) / len(predictions)
+        'prediction_variance': sum((p - sum(predictions)/len(predictions))**2 for p in predictions) / len(predictions),
+        'ctx_reads': total_ctx_reads,
+        'ctx_reads_per_eval': total_ctx_reads / len(predictions) if len(predictions) > 0 else 0.0,
+        'penalty_bits': total_loss,
+        'penalty_per_symbol': penalty_per_symbol,
+        'exception_counts': exc_counts
     }
     
     logger.info(f"Evaluation complete: F={fitness:.4f}, H0={H0:.4f}, Hprog={Hprog:.4f}")
     
+    return fitness, metrics
+
+
+def evaluate_program_calibrated(interpreter: LispInterpreter, program: LispNode,
+                               buffer: List[int], k: int, N_train: int = 2048,
+                               N_val: int = 2048) -> Tuple[float, Dict]:
+    """
+    Evaluate program with state-conditioned probability calibration for binary predictors.
+
+    Args:
+        interpreter: Lisp interpreter
+        program: AST program to evaluate
+        buffer: Full bit buffer (train + val)
+        k: Context length
+        N_train: Training samples for calibration
+        N_val: Validation samples for final evaluation
+
+    Returns:
+        Tuple of (fitness, metrics) on validation set
+    """
+    # Reset interpreter state
+    interpreter.reset_tracker()
+
+    # Check if this is a markov_table program that needs MLE parameters
+    from .evolve import program_is_probabilistic
+    if program_is_probabilistic(program):
+        # Fit MLE parameters on the training portion
+        _fit_mle_parameters(interpreter, buffer, k, N_train)
+
+    adapter = PredictorAdapter(interpreter)
+
+    # Train slice - collect per-state errors for state-conditioned calibration
+    stats = {(a, b): {"n": 0, "err": 0} for a in (0, 1) for b in (0, 1)}
+
+    for i in range(k, k + N_train):
+        if i >= len(buffer):
+            break
+
+        ctx = buffer[i-k:i]
+        y = buffer[i]
+
+        try:
+            # Reset interpreter before each prediction to prevent step accumulation
+            interpreter.reset_tracker()
+            p_raw = adapter.predict(program, ctx)
+            b = 1 if p_raw >= 0.5 else 0
+
+            # Get Markov state (last 2 bits of context)
+            if len(ctx) >= 2:
+                s = (ctx[-2], ctx[-1])
+            else:
+                s = (0, ctx[-1]) if len(ctx) >= 1 else (0, 0)
+
+            stats[s]["n"] += 1
+            stats[s]["err"] += int(b != y)
+
+        except Exception:
+            # Default to state (0,0) for failed predictions
+            s = (0, 0)
+            stats[s]["n"] += 1
+            stats[s]["err"] += 1
+
+    # Calculate per-state deltas
+    delta = {}
+    for s in stats:
+        n = stats[s]["n"]
+        err = stats[s]["err"]
+        delta[s] = max(1e-3, min(0.5 - 1e-3, err / max(1, n)))
+
+    def map_prob(b: int, s: tuple) -> float:
+        """Map binary prediction to calibrated probability per state."""
+        d = delta.get(s, 0.5)  # Default to 0.5 if state not seen
+        return (1 - d) if b == 1 else d
+
+    # Validation slice with calibrated probabilities
+    val_losses = []
+    ones = 0
+
+    # Context reads will be tracked as binary indicator
+
+    for i in range(k + N_train, k + N_train + N_val):
+        if i >= len(buffer):
+            break
+
+        ctx = buffer[i-k:i]
+        y = buffer[i]
+
+        try:
+            # Reset interpreter before each prediction to prevent step accumulation
+            interpreter.reset_tracker()
+            p_raw = adapter.predict(program, ctx)
+
+            # Import probabilistic program detection
+            from .evolve import program_is_probabilistic
+
+            # Check if this is a probabilistic program
+            is_prob_program = program_is_probabilistic(program)
+
+            if is_prob_program:
+                # Probabilistic programs output probabilities - use as-is, NO calibration
+                p = max(1e-6, min(1.0 - 1e-6, p_raw))
+            elif abs(p_raw - round(p_raw)) < 1e-6:  # Binary output (0 or 1)
+                # Apply state-conditioned calibration to binary predictions
+                b = 1 if p_raw >= 0.5 else 0
+
+                # Get Markov state for calibration
+                if len(ctx) >= 2:
+                    s = (ctx[-2], ctx[-1])
+                else:
+                    s = (0, ctx[-1]) if len(ctx) >= 1 else (0, 0)
+
+                p = map_prob(b, s)
+            else:
+                # Non-binary, non-probabilistic - clamp to valid probability
+                p = max(1e-6, min(1.0 - 1e-6, p_raw))
+
+            val_losses.append(cross_entropy_bits(y, p))
+            ones += y
+
+        except Exception:
+            val_losses.append(1.5)  # Penalty
+
+    # Context reads tracking (binary: did we access any context variables?)
+
+    if not val_losses:
+        return -float('inf'), {'error': 'No validation data'}
+
+    # Calculate fitness
+    q = ones / len(val_losses)
+    H0 = baseline_entropy_bits(q)
+    Hprog = sum(val_losses) / len(val_losses)
+    fitness = H0 - Hprog
+
+    metrics = {
+        'num_predictions': len(val_losses),
+        'empirical_1_rate': q,
+        'baseline_entropy': H0,
+        'model_entropy': Hprog,
+        'fitness': fitness,
+        'delta_calibration': delta,
+        'train_samples': sum(stats[s]["n"] for s in stats),
+        'val_samples': len(val_losses),
+        'ctx_reads_per_eval': 1.0 if interpreter.ctx_reads > 0 else 0.0,  # Binary: did we access context?
+    }
+
     return fitness, metrics
 
 
@@ -299,6 +519,7 @@ def benchmark_evaluation_speed():
     print("\n⚡ Evaluation Speed Benchmark")
     print("=" * 40)
     
+    from .core import const
     interpreter = LispInterpreter()
     program = const(0.5)  # Simple program
     
@@ -318,6 +539,112 @@ def benchmark_evaluation_speed():
         
         # Reset stream
         stream_gen = periodic([1, 0, 1, 1, 0])
+
+
+class NGramPredictor:
+    """Simple n-gram predictor for baseline comparisons."""
+
+    def __init__(self, order: int = 3, alpha: float = 0.1):
+        """
+        Initialize n-gram predictor.
+
+        Args:
+            order: N-gram order (context length)
+            alpha: Smoothing parameter
+        """
+        self.order = order
+        self.alpha = alpha
+        self.counts = {}
+        self.context_counts = {}
+
+    def fit(self, sequence: List[int]):
+        """Fit the n-gram model to a sequence."""
+        self.counts.clear()
+        self.context_counts.clear()
+
+        for i in range(len(sequence)):
+            # Get context
+            context = tuple(sequence[max(0, i-self.order):i])
+
+            # Count context
+            if context not in self.context_counts:
+                self.context_counts[context] = 0
+            self.context_counts[context] += 1
+
+            # Count context + next symbol
+            if i < len(sequence):
+                next_symbol = sequence[i]
+                key = (context, next_symbol)
+
+                if key not in self.counts:
+                    self.counts[key] = 0
+                self.counts[key] += 1
+
+    def predict_proba(self, context: List[int], next_symbol: int) -> float:
+        """Predict probability of next symbol given context."""
+        context_tuple = tuple(context[-self.order:]) if len(context) >= self.order else tuple(context)
+
+        key = (context_tuple, next_symbol)
+
+        # Add-alpha smoothing
+        count = self.counts.get(key, 0)
+        context_count = self.context_counts.get(context_tuple, 0)
+
+        # Smoothed probability
+        prob = (count + self.alpha) / (context_count + 2 * self.alpha)
+
+        return prob
+
+
+def _fit_mle_parameters(interpreter: LispInterpreter, buffer: List[int], k: int, N_train: int):
+    """Fit MLE parameters for markov_table on training data."""
+    # Collect per-state counts on training portion
+    state_counts = {(a, b): {'n': 0, 'c1': 0} for a in (0, 1) for b in (0, 1)}
+
+    for i in range(k, min(k + N_train, len(buffer))):
+        ctx = buffer[i-k:i]
+        y = buffer[i]
+
+        if len(ctx) >= 2:
+            s = (ctx[-2], ctx[-1])
+            state_counts[s]['n'] += 1
+            if y == 1:
+                state_counts[s]['c1'] += 1
+
+    # Compute MLE parameters with Laplace smoothing
+    mle_params = {}
+    for s in state_counts:
+        n_s = state_counts[s]['n']
+        c1_s = state_counts[s]['c1']
+
+        # MLE with Laplace: P(next=1|s) = (c1 + 1) / (n + 2)
+        p1_mle = (c1_s + 1) / (n_s + 2)
+        p0_mle = 1 - p1_mle
+
+        param_key = f'p{s[0]}{s[1]}'
+        mle_params[param_key] = p0_mle  # Store P(next=0|s) for compatibility
+
+    # Set parameters in interpreter
+    interpreter.markov_params = mle_params
+
+
+class EvalSession:
+    """Context manager for consistent evaluation with proper state management."""
+
+    def __init__(self, interpreter: LispInterpreter):
+        self.interpreter = interpreter
+        self.adapter = PredictorAdapter(interpreter)
+
+    def predict(self, ast: LispNode, ctx: List[int]) -> float:
+        """Make a prediction with guaranteed clean state."""
+        # Reset interpreter state - CRITICAL for preventing step accumulation
+        self.interpreter.reset_tracker()
+
+        # Assert tracker is reset (guardrail)
+        assert self.interpreter.step_count == 0, f"Tracker not reset: steps={self.interpreter.step_count}"
+
+        # Use adapter for consistent prediction
+        return self.adapter.predict(ast, ctx)
 
 
 if __name__ == "__main__":

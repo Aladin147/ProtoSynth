@@ -44,12 +44,23 @@ class LispInterpreter:
     - Support for basic arithmetic, boolean operations, and control flow
     """
     
-    def __init__(self, max_recursion_depth: int = 10, max_steps: int = 100, timeout_seconds: float = 1.0):
+    def __init__(self, max_recursion_depth: int = 10, max_steps: int = 100, timeout_seconds: float = 1.0, module_library=None):
         self.max_recursion_depth = max_recursion_depth
         self.max_steps = max_steps
         self.timeout_seconds = timeout_seconds
         self.step_count = 0
         self.start_time = None
+        self.module_library = module_library
+        self.ctx_reads = 0  # Track context variable reads
+        self._reserved = set()  # Reserved variable names
+
+        # Parametric module parameters (mutable during evolution)
+        self.markov_params = {
+            'p00': 0.8,  # P(next=0 | prev2=0, prev=0)
+            'p01': 0.2,  # P(next=0 | prev2=0, prev=1)
+            'p10': 0.2,  # P(next=0 | prev2=1, prev=0)
+            'p11': 0.8,  # P(next=0 | prev2=1, prev=1)
+        }
         
         # Built-in operations
         self.operations = {
@@ -72,8 +83,109 @@ class LispInterpreter:
             'and': lambda a, b: a and b,
             'or': lambda a, b: a or b,
             'not': lambda a: not a,
+            'xor': lambda a, b: (a and not b) or (not a and b),
+
+            # Context access operations
+            'index': self._safe_index,
+            'sum_bits': self._sum_bits,
+            'parity3': self._parity3,
+
+            # Parametric modules
+            'markov_table': self._markov_table,
         }
-    
+
+    def _safe_index(self, seq, idx):
+        """
+        Rock-solid indexing for context access.
+
+        Contract: input ctx: bitvec[k], i: int ∈ [-k, -1], output bit.
+        Semantics: (index ctx i) supports negatives; out-of-bounds → 0; returns int 0/1.
+        """
+        if not isinstance(seq, (list, tuple)):
+            return 0  # Out-of-bounds fallback
+
+        idx = int(idx)
+
+        # Only allow negative indices for context access
+        if idx >= 0:
+            return 0  # Positive indices not allowed
+
+        # Check bounds: idx must be in [-len(seq), -1]
+        if idx < -len(seq):
+            return 0  # Out-of-bounds fallback
+
+        # Return the bit as int 0/1
+        bit = seq[idx]
+        return int(bit) & 1  # Ensure 0/1
+
+    def _sum_bits(self, seq, start=None, end=None):
+        """
+        Sum bits in a sequence with optional range.
+
+        Args:
+            seq: Bit sequence
+            start: Start index (optional)
+            end: End index (optional)
+
+        Returns:
+            int: Sum of bits in range
+        """
+        if not isinstance(seq, (list, tuple)):
+            return 0
+
+        # Handle range slicing
+        if start is not None or end is not None:
+            start = int(start) if start is not None else 0
+            end = int(end) if end is not None else len(seq)
+            # Clamp ranges
+            start = max(0, min(start, len(seq)))
+            end = max(0, min(end, len(seq)))
+            seq = seq[start:end]
+
+        return sum(int(bit) & 1 for bit in seq)
+
+    def _parity3(self, seq):
+        """
+        Calculate parity (XOR) of last 3 bits.
+
+        Args:
+            seq: Bit sequence
+
+        Returns:
+            int: Parity bit (0 or 1)
+        """
+        if not isinstance(seq, (list, tuple)) or len(seq) < 3:
+            return 0
+
+        # XOR of last 3 bits
+        last_3 = seq[-3:]
+        result = 0
+        for bit in last_3:
+            result ^= (int(bit) & 1)
+
+        return result
+
+    def _markov_table(self, state2):
+        """
+        Parametric Markov table lookup.
+
+        Args:
+            state2: State index (0-3) computed as 2*prev2 + prev
+
+        Returns:
+            Probability P(next=1) in [0,1] for next bit
+        """
+        # Clamp state to valid range
+        state_idx = int(state2) % 4
+
+        # Map state index to (prev2, prev) tuple
+        state_map = {0: 'p00', 1: 'p01', 2: 'p10', 3: 'p11'}
+        param_key = state_map[state_idx]
+
+        # Return P(next=1) = 1 - P(next=0)
+        p_next_0 = self.markov_params[param_key]
+        return 1.0 - p_next_0
+
     def evaluate(self, node: LispNode, environment: Optional[Dict[str, Any]] = None, depth: int = 0) -> Any:
         """
         Evaluate a LispNode in the given environment.
@@ -106,24 +218,34 @@ class LispInterpreter:
         elif node.node_type == 'var':
             if node.value not in environment:
                 raise NameError(f"Undefined variable: {node.value}")
+
+            # Track context variable reads
+            if node.value in ['prev', 'prev2', 'prev3', 'prev4', 'prev5', 'prev6', 'ctx'] or node.value.startswith('ctx_') or node.value.startswith('x_'):
+                self.ctx_reads += 1
+
             return environment[node.value]
         
         elif node.node_type == 'let':
             # let name val body
             if len(node.children) != 3:
                 raise ValueError("let requires exactly 3 arguments: name, value, body")
-            
+
             name_node, val_node, body_node = node.children
             if name_node.node_type != 'var':
                 raise ValueError("let name must be a variable")
-            
+
             name = name_node.value
+
+            # Check for reserved variable shadowing
+            if hasattr(self, '_reserved') and name in self._reserved:
+                raise ValueError(f"Attempt to shadow reserved var: {name}")
+
             val = self.evaluate(val_node, environment, depth + 1)
-            
+
             # Create new environment with the binding
             new_env = environment.copy()
             new_env[name] = val
-            
+
             return self.evaluate(body_node, new_env, depth + 1)
         
         elif node.node_type == 'if':
@@ -154,7 +276,16 @@ class LispInterpreter:
                 return op_func(*args)
             except TypeError as e:
                 raise ValueError(f"Invalid arguments for operation {op_name}: {e}")
-        
+
+        elif node.node_type == 'call':
+            # Module call: call module_name args
+            if self.module_library is None:
+                raise ValueError("Module calls not supported: no module library provided")
+
+            # Expand the module call and evaluate the result
+            expanded = self.module_library.expand_module_call(node)
+            return self.evaluate(expanded, environment, depth + 1)
+
         else:
             raise ValueError(f"Unknown node type: {node.node_type}")
     
@@ -168,7 +299,22 @@ class LispInterpreter:
         
         if self.start_time and time.time() - self.start_time > self.timeout_seconds:
             raise RuntimeError(f"Timeout exceeded: {time.time() - self.start_time:.2f}s > {self.timeout_seconds}s")
-    
+
+    def reset_tracker(self, max_steps=None, timeout=None, max_depth=None):
+        """Reset the interpreter for a new evaluation."""
+        if max_steps is not None:
+            self.max_steps = max_steps
+        if timeout is not None:
+            self.timeout_seconds = timeout
+        if max_depth is not None:
+            self.max_recursion_depth = max_depth
+
+        # Reset state
+        self.start_time = time.time()
+        self.step_count = 0
+        self.ctx_reads = 0
+        self._reserved = set()
+
     def get_self_ast(self) -> LispNode:
         """
         Return an AST representation of this interpreter's configuration.

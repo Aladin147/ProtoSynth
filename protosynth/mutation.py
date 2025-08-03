@@ -265,7 +265,7 @@ def _var_rename_mutation(root: LispNode, rng: random.Random) -> LispNode:
     return mutated
 
 
-def _is_safe_replacement_position(parent: LispNode, child_idx: int) -> bool:
+def _is_safe_replacement_position(parent: LispNode, child_idx: Optional[int]) -> bool:
     """
     Check if a position is safe for arbitrary node replacement.
 
@@ -327,7 +327,8 @@ def _subtree_insert_mutation(root: LispNode, rng: random.Random) -> LispNode:
     target_parent, target_idx, target_node = rng.choice(target_candidates)
 
     # Replace the target with our cloned source
-    target_parent.children[target_idx] = source_clone
+    if target_idx is not None and hasattr(target_parent, 'children'):
+        target_parent.children[target_idx] = source_clone
 
     return mutated
 
@@ -367,7 +368,8 @@ def _subtree_delete_mutation(root: LispNode, rng: random.Random) -> LispNode:
 
     from .core import LispNode
     replacement = LispNode('const', default_value)
-    target_parent.children[target_idx] = replacement
+    if target_idx is not None and hasattr(target_parent, 'children'):
+        target_parent.children[target_idx] = replacement
 
     return mutated
 

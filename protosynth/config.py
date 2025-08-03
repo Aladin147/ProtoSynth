@@ -36,9 +36,9 @@ class InterpreterConfig:
 @dataclass
 class ProtoSynthConfig:
     """Main configuration for ProtoSynth system."""
-    mutation: MutationConfig = None
-    verifier: VerifierConfig = None
-    interpreter: InterpreterConfig = None
+    mutation: Optional[MutationConfig] = None
+    verifier: Optional[VerifierConfig] = None
+    interpreter: Optional[InterpreterConfig] = None
     log_level: str = "INFO"
     
     def __post_init__(self):

@@ -44,6 +44,59 @@ def periodic(pattern_bits: Union[List[int], str], seed: int = 0) -> Iterator[int
         i += 1
 
 
+def periodic_k4(seed: int = 0) -> Iterator[int]:
+    """Generate periodic pattern with period 4 for k=4 benchmark."""
+    return periodic([1, 0, 1, 1], seed)
+
+
+def markov_k1(p_stay: float = 0.8, seed: int = 0) -> Iterator[int]:
+    """
+    Generate first-order Markov chain for k=1 benchmark.
+
+    Args:
+        p_stay: Probability of staying in same state
+        seed: Random seed
+
+    Yields:
+        int: Next bit based on Markov transition
+    """
+    rnd = random.Random(seed)
+    s = rnd.randrange(2)  # current bit
+
+    while True:
+        yield s
+        # Next state: stay with p_stay, flip otherwise
+        if rnd.random() < p_stay:
+            s = s  # stay
+        else:
+            s ^= 1  # flip
+
+def markov_k2(p_stay: float = 0.8, seed: int = 0) -> Iterator[int]:
+    """
+    Generate first-order Markov chain for k=1 benchmark.
+    Note: Despite the name 'k2', this is actually k=1 (first-order).
+    Use markov_k1 directly for clarity.
+    """
+    return markov_k1(p_stay, seed)
+
+def check_transitions(gen_factory, steps: int = 10000):
+    """Check transition probabilities of a generator."""
+    g = gen_factory()
+    prev = next(g)
+    counts = {(0,0): 0, (0,1): 0, (1,0): 0, (1,1): 0}
+
+    for _ in range(steps - 1):
+        cur = next(g)
+        counts[(prev, cur)] += 1
+        prev = cur
+
+    total = steps - 1
+    stay = (counts[(0,0)] + counts[(1,1)]) / total
+    flip = 1 - stay
+
+    return counts, stay, flip
+
+
 def k_order_markov(k: int, trans: Dict[Tuple[int, ...], float], seed: int = 0) -> Iterator[int]:
     """
     Generate bits using a k-order Markov chain.
@@ -232,3 +285,17 @@ def create_environment(env_type: str, **kwargs) -> Iterator[int]:
     
     else:
         raise ValueError(f"Unknown environment type: {env_type}")
+
+
+def get_stream_factory(env_name: str):
+    """Get a stream factory function for the given environment name."""
+    if env_name == "periodic_k4":
+        return lambda: periodic([1, 0, 1, 0], seed=42)
+    elif env_name == "markov_k2":
+        return lambda: markov_k1(p_stay=0.8, seed=42)
+    elif env_name == "alternating":
+        return lambda: periodic([0, 1], seed=42)
+    elif env_name == "random":
+        return lambda: random_bits(p=0.5, seed=42)
+    else:
+        raise ValueError(f"Unknown environment: {env_name}")

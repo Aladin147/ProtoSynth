@@ -1,0 +1,35 @@
+{
+  "version": "0.1.0",
+  "env": "markov_k2",
+  "config": {
+    "mu": 8,
+    "lambda_": 16,
+    "k": 2,
+    "N": 2048,
+    "seed": 2,
+    "generations": 3
+  },
+  "results": {
+    "best_fitness": 0.27623349987533874,
+    "final_generation": 0,
+    "elapsed_time": 0.6594967842102051
+  },
+  "best_program": "LispNode(op, markov_table, [LispNode(op, +, [LispNode(op, *, [LispNode(const, 2), LispNode(var, prev2)]), LispNode(var, prev)])])",
+  "best_metrics": {
+    "markov_params": {
+      "p00": 0.20330495743615423,
+      "p01": 0.781404549950544,
+      "p10": 0.19683481701285854,
+      "p11": 0.8018537074148296
+    },
+    "num_predictions": 1028,
+    "empirical_1_rate": 0.4581712062256809,
+    "baseline_entropy": 0.9949456778650663,
+    "model_entropy": 0.7187121779897275,
+    "fitness": 0.27623349987533874,
+    "delta_calibration": "{(0, 0): 0.23512747875354106, (0, 1): 0.25688073394495414, (1, 0): 0.24074074074074073, (1, 1): 0.17391304347826086}",
+    "train_samples": 1030,
+    "val_samples": 1028,
+    "ctx_reads_per_eval": 1.0
+  }
+}

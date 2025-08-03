@@ -44,34 +44,52 @@ class PredictorAdapter:
     def predict(self, program: LispNode, context: List[int]) -> float:
         """
         Use a program to predict the next bit given context.
-        
+
         Args:
             program: AST program to evaluate
-            context: List of previous k bits
-            
+            context: List of previous k bits (no current bit)
+
         Returns:
             float: Probability of next bit being 1, clamped to [eps, 1-eps]
+
+        Raises:
+            Exception: If evaluation fails (caller should penalize)
         """
-        try:
-            # Create environment with prebound 'ctx' variable
-            environment = {'ctx': context}
-            
-            # Evaluate the program
-            result = self.interpreter.evaluate(program, environment)
-            
-            # Coerce result to probability
-            probability = self._coerce_to_probability(result)
-            
-            # Clamp to valid range
-            clamped_prob = max(self.eps, min(1.0 - self.eps, probability))
-            
-            logger.debug(f"Prediction: ctx={context} -> raw={result} -> p={clamped_prob:.4f}")
-            
-            return clamped_prob
-            
-        except Exception as e:
-            logger.debug(f"Prediction failed: {e}, returning p=0.5")
-            return 0.5
+        # Reset context read counter
+        if hasattr(self.interpreter, 'ctx_reads'):
+            self.interpreter.ctx_reads = 0
+
+        # Create fresh, clean environment per prediction
+        environment = {}
+        environment['ctx'] = tuple(int(b) for b in context)  # Immutable, clean ints
+
+        # Bind individual context variables for convenience
+        if len(context) >= 1:
+            environment['prev'] = int(context[-1])  # Most recent bit
+        if len(context) >= 2:
+            environment['prev2'] = int(context[-2])  # Second most recent
+        if len(context) >= 3:
+            environment['prev3'] = int(context[-3])  # Third most recent
+        if len(context) >= 4:
+            environment['prev4'] = int(context[-4])  # Fourth most recent
+        if len(context) >= 5:
+            environment['prev5'] = int(context[-5])  # Fifth most recent
+
+        # Mark reserved variables to detect shadowing
+        self.interpreter._reserved = {'ctx'}
+
+        # Evaluate the program - let exceptions propagate
+        result = self.interpreter.evaluate(program, environment)
+
+        # Coerce result to probability
+        probability = self._coerce_to_probability(result)
+
+        # Clamp to valid range
+        clamped_prob = max(self.eps, min(1.0 - self.eps, probability))
+
+        logger.debug(f"Prediction: ctx={context} -> raw={result} -> p={clamped_prob:.4f}")
+
+        return clamped_prob
     
     def _coerce_to_probability(self, value: Any) -> float:
         """
@@ -86,9 +104,9 @@ class PredictorAdapter:
         Raises:
             ValueError: If value cannot be coerced to probability
         """
-        # Handle None
+        # Handle None - this should not happen in normal operation
         if value is None:
-            return 0.5
+            raise ValueError("Cannot coerce None to probability")
         
         # Handle boolean (hard prediction)
         if isinstance(value, bool):
