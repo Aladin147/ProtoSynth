@@ -1,0 +1,20 @@
+cff-version: 1.2.0
+title: "ProtoSynth: Self-Modifying Learning with Verified Evaluation"
+message: "If you use ProtoSynth in your work, please cite this release."
+type: software
+authors:
+  - family-names: "El Alaoui"
+    given-names: "Aladin"
+repository-code: "https://github.com/Aladin147/ProtoSynth"
+url: "https://github.com/Aladin147/ProtoSynth"
+license: "MIT"
+version: "v0.1.0"
+date-released: "2025-08-03"
+preferred-citation:
+  type: article
+  title: "ProtoSynth v0.1.0: Self-Modifying Learning with Verified Evaluation"
+  authors:
+    - family-names: "El Alaoui"
+      given-names: "Aladin"
+  year: 2025
+  notes: "Preprint / software release"

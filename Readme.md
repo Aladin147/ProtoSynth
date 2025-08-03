@@ -1,5 +1,9 @@
 # ProtoSynth
 
+[![CI](https://img.shields.io/github/actions/workflow/status/Aladin147/ProtoSynth/ci.yml?branch=master)](https://github.com/Aladin147/ProtoSynth/actions)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/Aladin147/ProtoSynth)](https://github.com/Aladin147/ProtoSynth/releases)
+
 ProtoSynth is a research prototype for evolving sequence prediction programs through mutation and selection. The system uses a Lisp-like interpreter that can modify its own abstract syntax trees to discover predictive patterns in binary sequences.
 
 ## Overview
