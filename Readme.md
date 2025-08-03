@@ -1,170 +1,156 @@
-# ProtoSynth v0.1.0 — Self-Modifying AI with Verified Evaluation
+# ProtoSynth
 
-ProtoSynth is an experimental, **non-gradient** learning system. It improves by **rewriting its own code** under verification and is scored by **compression / prediction utility** on synthetic environments. No human text datasets. No backprop.
+ProtoSynth is a research prototype for evolving sequence prediction programs through mutation and selection. The system uses a Lisp-like interpreter that can modify its own abstract syntax trees to discover predictive patterns in binary sequences.
 
-This README gives you a clean, copy-pasteable quick start, results, and the few “gotchas” that matter.
+## Overview
 
----
+This implementation explores program synthesis for sequence prediction tasks using:
 
-## Table of Contents
-- [Features](#features)
-- [Quick Start](#quick-start)
-- [Benchmarks](#benchmarks)
-- [Core Concepts](#core-concepts)
-- [Architecture](#architecture)
-- [Reproducibility](#reproducibility)
-- [Configuration](#configuration)
-- [Tests & CI](#tests--ci)
-- [Gotchas (Read This)](#gotchas-read-this)
-- [Project Structure](#project-structure)
-- [Roadmap](#roadmap)
-- [License & Citation](#license--citation)
+- **Evolutionary programming**: Mutation and selection of Lisp-like ASTs
+- **Self-modification**: Programs can inspect and modify their own structure  
+- **Verified evaluation**: Mathematical validation of fitness measurements
+- **Reproducible experiments**: Complete save/replay system for scientific reproducibility
 
----
+The system has been tested on periodic sequences and first-order Markov chains, achieving performance near theoretical limits on both tasks.
 
-## Features
-- **Self-modifying Lisp-like interpreter** with resource limits (steps, depth, timeout).
-- **Mutation + verification** pipeline (arity, scope, reserved names, resource hints).
-- **Compression/prediction fitness** (cross-entropy, bits saved per symbol).
-- **Curriculum & novelty** (optional): bandits, novelty archive, module mining via MDL.
-- **Parity-checked evaluation**: measured fitness matches analytic/theoretical \(F^\*\) within ±0.01.
-- **Deterministic bundles** for replay, audit, and publication.
+## Installation
 
----
+```bash
+pip install protosynth
+```
+
+Or from source:
+```bash
+git clone https://github.com/Aladin147/ProtoSynth.git
+cd ProtoSynth
+pip install -e .
+```
 
 ## Quick Start
 
-> Requires Python 3.10–3.12.
+### Basic Usage
 
 ```bash
-# Install
-pip install -e .
+# Evolve programs for periodic pattern prediction
+protosynth-evolve --env periodic_k4 --gens 100 --k 4
 
-# Run quick benchmark demos (finish fast)
-protosynth-evolve --env periodic_k4 --gens 50 --k 4
-protosynth-evolve --env markov_k2   --gens 50 --k 2
+# Evolve programs for Markov chain prediction  
+protosynth-evolve --env markov_k2 --gens 200 --k 2
 
-Reproduce v0.1.0 results:
+# Save results for later analysis
+protosynth-evolve --env markov_k2 --gens 100 --k 2 --save-bundle results.json
 
-# Full runs used for the release
-protosynth-evolve --env periodic_k4 --gens 200 --k 4 --mu 16 --lambda 48 --seed 42 --save-bundle bundles/v0.1.0/periodic.json
-protosynth-evolve --env markov_k2   --gens 300 --k 2 --mu 16 --lambda 48 --seed 43 --save-bundle bundles/v0.1.0/markov.json
+# Replay saved results
+protosynth-replay --bundle results.json
+```
 
-# Replay any bundle (deterministic)
-protosynth-replay --bundle bundles/v0.1.0/markov.json
+### Programmatic Usage
 
-Benchmarks
-Benchmark	Target (bits/sym)	Achieved	F* (theory)	Status
-periodic_k4	≥ 0.25	0.811312	—	✅ Pass
-markov_k2	≥ 0.10	0.287868	0.289726	✅ Pass
-Teacher parity (Markov)	—	0.286797	0.289726	✅
+```python
+from protosynth import LispInterpreter, const, var, op
+from protosynth.envs import periodic
 
-Takeaway: evaluation parity is locked: F_eval ≈ F* ± 0.01.
-Core Concepts
+# Create a simple program
+program = op('xor', var('prev'), var('prev2'))
 
-    Bits-saved fitness:
-    F=H2(q)−1N∑tCE(yt,pt)F=H2​(q)−N1​∑t​CE(yt​,pt​).
-    Higher is better. Positive FF means you compress/predict better than the baseline entropy.
+# Evaluate on a sequence  
+interpreter = LispInterpreter()
+stream = periodic([1, 0, 1, 0])
+# ... evaluation code
+```
 
-    Probabilistic vs binary programs:
-    Programs that already output probabilities (e.g., markov_table) skip calibration. Binary programs may be calibrated on the train slice only.
+## Architecture
 
-    Safety rails:
-    Per-prediction reset_tracker(); strict penalties replace CE on exception/timeout.
+### Core Components
 
-Architecture
+- **`LispNode`**: AST representation for programs
+- **`LispInterpreter`**: Execution engine with resource constraints
+- **`EvolutionEngine`**: Mutation and selection logic
+- **`PredictorAdapter`**: Interface between programs and evaluation
 
-Interpreter & AST
+### Environments
 
-    Minimal Lisp-like nodes: const, var, let, if, op, call.
+- **`periodic`**: Repeating bit patterns
+- **`markov_k1`**: First-order Markov chains  
+- **`random_bits`**: Independent random bits
 
-    Resource tracker: max_steps, max_depth, timeout (reset before every prediction).
+### Evaluation
 
-Mutation Engine
+Programs are scored using compression-based fitness:
+```
+F = H₀ - H_model
+```
+where H₀ is baseline entropy and H_model is model entropy.
 
-    Operator swap, constant perturb, variable rename, subtree insert/delete.
+## Benchmarks
 
-    Context-preserving mutations (lower rate inside ctx-dependent subtrees).
+The system has been validated on two standard tasks:
 
-Verification
+| Environment | Target F | Achieved F | F* (theory) | Notes |
+|-------------|----------|------------|-------------|-------|
+| periodic_k4 | ≥ 0.25   | 0.811      | —           | Pattern: [1,0,1,0] |
+| markov_k2   | ≥ 0.10   | 0.288      | 0.289       | Near theoretical limit |
 
-    Arity checks, scope & reserved names (ctx), resource hints, module contracts.
+## Implementation Notes
 
-Evaluation
+### Key Design Decisions
 
-    Single pipeline for all cases (population + teacher).
+1. **Interpreter state management**: Each prediction resets execution state to prevent accumulation artifacts
+2. **Probabilistic program detection**: Programs outputting probabilities skip binary calibration  
+3. **Penalty handling**: Exceptions replace cross-entropy loss rather than adding to it
+4. **Context preservation**: Evolution maintains programs that use historical context
 
-    Ensemble buffers (optional) with union-train calibration for binary programs.
+### Known Limitations
 
-    Parity harness: analytic F\*F\* from counts vs measured F_eval.
+- Currently limited to binary sequences
+- Evaluation is single-threaded
+- Memory usage scales with population size
+- No persistent program libraries between runs
 
-Selection
+## Development
 
-    ES (μ+λ) with optional context niche (keeps ctx users alive early).
+### Running Tests
 
-    Optional bandits & novelty archive.
+```bash
+pytest tests/
+python scripts/staged_parity_harness.py  # Validates evaluation correctness
+```
 
-Reproducibility
+### Project Structure
 
-    Replay bundles include: seeds, config, best ASTs, module library, metrics, and verify reports.
+```
+protosynth/
+├── core.py          # AST and interpreter
+├── evolve.py        # Evolution engine  
+├── eval.py          # Fitness evaluation
+├── envs.py          # Test environments
+├── mutation.py      # AST mutations
+├── predictor.py     # Prediction interface
+└── cli.py           # Command-line tools
+```
 
-    Parity tests guarantee F_eval ≈ F* on the same validation buffers.
+## Contributing
 
-    Determinism: seeded RNG; no global state.
+This is a research prototype. Contributions are welcome, particularly:
 
-Configuration
+- Additional sequence environments
+- Performance optimizations  
+- Multi-alphabet support
+- Visualization tools
 
-Typical knobs:
+## License
 
-env: markov_k2
-k: 2
-gens: 300
-mu: 16
-lambda: 48
-mutation_rate: 0.10
-time_limits:
-  max_steps: 1000
-  timeout_sec: 10.0
-evaluation:
-  ensemble_buffers: 3
-  N_train: 4096
-  N_val: 4096
-  penalty_bits: 1.5  # replaces CE on exception only
-selection:
-  context_quota: 8   # adaptive decay gated by readiness
-  force_ctx_parent_frac: 0.5
+MIT License. See LICENSE file for details.
 
-Tests & CI
+## Citation
 
-Run everything:
+If you use ProtoSynth in research, please cite:
 
-pytest -q
-python scripts/staged_parity_harness.py   # asserts F_eval ≈ F* ± 0.01
-
-Core tests include:
-
-    Teacher parity on Markov (analytic vs measured).
-
-    Alternating stream: prev2 ≥ 0.95 bits saved.
-
-    Markov(0.8): prev > 0 bits saved.
-
-    Reserved var & out-of-range probability errors.
-
-Gotchas (Read This)
-
-    Reset tracker before every prediction
-    Call interpreter.reset_tracker() for each time step. This prevents hidden state accumulation and timeouts.
-
-    Single evaluation path
-    Population and teacher must go through the exact same adapter/evaluator.
-
-    Probabilistic programs skip calibration
-    Modules like markov_table, soft_prev, soft_flip output probabilities already—do not remap them via binary calibration.
-
-    Penalties replace CE
-    On exception/timeout, use the penalty instead of cross-entropy, never added on top.
-
-    Context handling
-    Do not shadow ctx. Use negative indices for past bits: index(ctx, -1) is last bit.
-
+```bibtex
+@software{protosynth2024,
+  title={ProtoSynth: Evolutionary Program Synthesis for Sequence Prediction},
+  author={ProtoSynth Team},
+  year={2024},
+  url={https://github.com/Aladin147/ProtoSynth}
+}
+```

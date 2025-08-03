@@ -1,0 +1,41 @@
+name: Feature request
+description: Suggest a new feature for ProtoSynth
+title: "[Feature] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem would this solve?
+      description: Describe the use case or limitation you're facing
+      placeholder: |
+        Currently, ProtoSynth can only handle binary sequences, but many real-world 
+        prediction tasks involve multi-valued sequences (e.g., DNA with A/T/G/C).
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Minimal interface / API sketch
+      description: How would you like to use this feature?
+      placeholder: |
+        ```python
+        # Multi-alphabet environment
+        protosynth-evolve --env dna_k3 --alphabet ATGC --gens 100
+        
+        # Or programmatically:
+        from protosynth.envs import multi_alphabet
+        stream = multi_alphabet(alphabet="ATGC", pattern="ATGATG", seed=42)
+        ```
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternative approaches
+      description: Have you considered other ways to solve this problem?
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other information about the feature request

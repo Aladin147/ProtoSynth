@@ -70,3 +70,10 @@ Thumbs.db
 # Temporary files
 *.tmp
 *.temp
+
+# ProtoSynth specific
+debug/
+demo/
+experiments/
+complete_demo_*/
+*.pkl

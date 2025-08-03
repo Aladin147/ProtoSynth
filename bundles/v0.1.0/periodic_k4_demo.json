@@ -1,0 +1,36 @@
+{
+  "version": "0.1.0",
+  "env": "periodic_k4",
+  "config": {
+    "mu": 16,
+    "lambda_": 48,
+    "k": 4,
+    "N": 2048,
+    "seed": 42,
+    "generations": 50
+  },
+  "results": {
+    "best_fitness": 1.00105640072005,
+    "final_generation": 0,
+    "elapsed_time": 1.311917781829834
+  },
+  "best_program": "LispNode(op, xor, [LispNode(op, xor, [LispNode(var, prev), LispNode(var, prev2)]), LispNode(var, prev3)])",
+  "best_metrics": {
+    "num_predictions": 2049,
+    "empirical_1_rate": 0.5002440214738897,
+    "baseline_entropy": 0.9999998281851712,
+    "model_entropy": 0.0014434168696686757,
+    "base_fitness": 0.9985564113155025,
+    "context_bonus": 0.002499989404547541,
+    "fitness": 1.00105640072005,
+    "total_bits_saved": 2051.1645650753826,
+    "context_length": 4,
+    "avg_prediction": 0.5002440209858467,
+    "prediction_variance": 0.2499989404547541,
+    "ctx_reads": 6147,
+    "ctx_reads_per_eval": 3.0,
+    "penalty_bits": 0.0,
+    "penalty_per_symbol": 0.0,
+    "exception_counts": {}
+  }
+}

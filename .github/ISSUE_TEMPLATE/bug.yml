@@ -1,0 +1,38 @@
+name: Bug
+description: Report a bug in ProtoSynth
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Paste CLI command + config. Attach the bundle from --save-bundle if possible.
+      placeholder: |
+        protosynth-evolve --env markov_k2 --gens 100 --k 2 --mu 16 --lambda 48 --seed 42
+        
+        Expected: F >= 0.1
+        Actual: F = -1.5 (stuck)
+        
+        Bundle: [attach .json file]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Commit/Tag
+      placeholder: "v0.1.0 or commit hash"
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.0"
+    validations:
+      required: true
+  - type: textarea
+    id: additional
+    attributes:
+      label: Additional context
+      description: Any other information that might help debug the issue
