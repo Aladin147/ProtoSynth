@@ -23,24 +23,33 @@ EPS = 1e-12
 
 def cross_entropy_bits(y: int, p: float) -> float:
     """
-    Calculate cross-entropy for a single prediction in bits.
-    
+    Cross-entropy in bits. Avoids clamping when the prediction is a perfect match,
+    so CE==0 for (y=1,p=1) and (y=0,p=0). Only clamp to avoid log(0) on mismatches.
+
     Args:
         y: True bit value (0 or 1)
         p: Predicted probability of bit being 1
-        
+
     Returns:
         float: Cross-entropy in bits
-        
-    Formula: -[y * log2(p) + (1-y) * log2(1-p)]
     """
-    # Clamp probability to avoid log(0)
-    p = max(EPS, min(1.0 - EPS, p))
-    
+    # Perfect or near-perfect matches → zero loss exactly
+    # Use a threshold to handle numerical precision issues from PredictorAdapter clamping
+    threshold = 1e-5  # Slightly larger than typical eps values
+    if y == 1 and p >= (1.0 - threshold):
+        return 0.0
+    if y == 0 and p <= threshold:
+        return 0.0
+
+    # Clamp only to avoid log(0) in mismatched/extreme cases
     if y == 1:
-        return -math.log2(p)
-    else:
-        return -math.log2(1.0 - p)
+        p = max(p, EPS)          # prevent log2(0) if p is too small
+        p = min(p, 1.0 - EPS)    # keep numeric stability near 1
+    else:  # y == 0
+        p = min(p, 1.0 - EPS)    # prevent log2(0) if p is too large
+        p = max(p, EPS)          # keep numeric stability near 0
+
+    return -(y*math.log2(p) + (1-y)*math.log2(1.0 - p))
 
 
 def calibrate_delta(pred_bits: List[int], y_bits: List[int], eps: float = 1e-12) -> float:
@@ -66,18 +75,22 @@ def calibrate_delta(pred_bits: List[int], y_bits: List[int], eps: float = 1e-12)
 def baseline_entropy_bits(q: float) -> float:
     """
     Calculate baseline entropy for a stream with empirical 1-rate q.
-    
+
     Args:
         q: Empirical probability of 1s in the stream
-        
+
     Returns:
         float: Baseline entropy in bits per symbol
-        
+
     Formula: H0 = -[q * log2(q) + (1-q) * log2(1-q)]
     """
-    # Clamp to avoid log(0)
+    # Perfect cases → zero entropy exactly
+    if q <= 0.0 or q >= 1.0:
+        return 0.0
+
+    # Clamp to avoid log(0) for values very close to 0 or 1
     q = max(EPS, min(1.0 - EPS, q))
-    
+
     return -(q * math.log2(q) + (1.0 - q) * math.log2(1.0 - q))
 
 

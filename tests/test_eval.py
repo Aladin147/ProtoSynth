@@ -137,8 +137,8 @@ class TestEvaluationSystem(unittest.TestCase):
         
         fitness, metrics = evaluate_program_on_window(self.interpreter, program, bits, k=2)
         
-        # On constant stream, perfect predictor should achieve near-optimal fitness
-        self.assertGreater(fitness, 0.0)  # Should be positive
+        # On constant stream, perfect predictor should achieve optimal fitness (which is 0 for constant streams)
+        self.assertGreaterEqual(fitness, 0.0)  # Should be non-negative
         self.assertAlmostEqual(metrics['empirical_1_rate'], 1.0, places=6)
         self.assertLess(metrics['model_entropy'], 0.1)  # Should be very low
     
