@@ -1,0 +1,22 @@
+name: release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  attach:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: 
+          python-version: "3.11"
+      - run: pip install -e .
+      - run: mkdir -p bundles
+      - run: |
+          protosynth-evolve --env periodic_k4 --gens 50 --k 4 --save-bundle bundles/periodic.json
+          protosynth-evolve --env markov_k2   --gens 50 --k 2 --save-bundle bundles/markov.json
+      - uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            bundles/periodic.json
+            bundles/markov.json

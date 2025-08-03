@@ -32,6 +32,7 @@ Issues = "https://github.com/Aladin147/ProtoSynth/issues"
 [project.scripts]
 protosynth-evolve = "protosynth.cli:evolve_main"
 protosynth-replay = "protosynth.cli:replay_main"
+protosynth-info = "protosynth.cli:info_main"
 
 [project.optional-dependencies]
 dev = ["pytest>=6.0"]

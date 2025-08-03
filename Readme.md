@@ -1,6 +1,7 @@
 # ProtoSynth
 
 [![CI](https://img.shields.io/github/actions/workflow/status/Aladin147/ProtoSynth/ci.yml?branch=master)](https://github.com/Aladin147/ProtoSynth/actions)
+[![Coverage](https://codecov.io/gh/Aladin147/ProtoSynth/branch/master/graph/badge.svg)](https://codecov.io/gh/Aladin147/ProtoSynth)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/Aladin147/ProtoSynth)](https://github.com/Aladin147/ProtoSynth/releases)
 
