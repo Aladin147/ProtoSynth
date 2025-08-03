@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 EVAL_ADAPTER = None  # Will be set to the predictor function
 
 # Small epsilon for numerical stability (reduced for less punitive CE)
-EPS = 1e-3
+EPS = 1e-12
 
 
 def cross_entropy_bits(y: int, p: float) -> float:
@@ -43,7 +43,7 @@ def cross_entropy_bits(y: int, p: float) -> float:
         return -math.log2(1.0 - p)
 
 
-def calibrate_delta(pred_bits: List[int], y_bits: List[int], eps: float = 1e-3) -> float:
+def calibrate_delta(pred_bits: List[int], y_bits: List[int], eps: float = 1e-12) -> float:
     """
     Calibrate binary predictions to probabilities using MLE.
 

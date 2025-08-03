@@ -865,7 +865,7 @@ class EvolutionEngine:
             'generation': self.generation,
             'best_fitness': max(fitnesses) if fitnesses else -float('inf'),
             'worst_fitness': min(fitnesses) if fitnesses else -float('inf'),
-            'mean_fitness': sum(fitnesses) / len(fitnesses) if fitnesses else -float('inf'),
+            'mean_fitness': round(sum(fitnesses) / len(fitnesses), 12) if fitnesses else -float('inf'),
             'fitness_std': (sum((f - sum(fitnesses)/len(fitnesses))**2 for f in fitnesses) / len(fitnesses))**0.5 if len(fitnesses) > 1 else 0.0,
             'mean_size': sum(sizes) / len(sizes),
             'size_range': (min(sizes), max(sizes))
